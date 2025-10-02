@@ -19,13 +19,14 @@ CtrlFreq: 150
 GlobalBox_min:              [-15.0, -15.0, 0.2]  #global box constraint. The lower bound for all polyhedrons.
 GlobalBox_size:             [30.0, 30.0, 3.0]    #global box size, the allowed vehicle moving range is : GlobalBox_min->GlobalBox_min+GlobalBox_size
 
-DynObsSize_min:             [0.3, 0.3, 0.5]
-DynObsSize_max:             [1.0, 1.0, 2.5]
+# 球体障碍物参数：只需要一个直径参数
+DynObsSize_min:             [0.5, 0.5, 0.5]    # 球体最小直径（只使用第一个值）
+DynObsSize_max:             [2.0, 2.0, 2.0]    # 球体最大直径（只使用第一个值）
 DynObsNum:                  10
 SafeCheckRange:             4.0
 SafeMargin:                 0.3  #0.3 for static hardware test
 search/safety_radius:       0.4  # should be bigger than SafeMargin
-VelMax:                     2.0  # maximal speed for kino-path searching and trajectory optimization. The code will double this max speed 
+VelMax:                     2.0  # maximal speed for kino-path searching and trajectory optimization. The code will double this max speed
                                  #constrain (at least to 4 m/s) for trajectory when a ball is detected
 JerkMax:                    36.0
 DynObsSpeed_max:            2.0

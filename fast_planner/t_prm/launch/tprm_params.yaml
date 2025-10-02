@@ -1,0 +1,11 @@
+WorldFrameName: 'map'
+
+# 全局边界框
+GlobalBox_min:              [0.0, 0.0, 0.2]
+GlobalBox_size:             [15.0, 15.0, 3.0]
+
+# 球体障碍物参数
+DynObsSize_min:             [0.5, 0.5, 0.5]    # 球体最小直径
+DynObsSize_max:             [1.5, 1.5, 1.5]    # 球体最大直径
+DynObsNum:                  10                   # 障碍物数量
+DynObsSpeed_max:            1                 # 最大速度 m/s

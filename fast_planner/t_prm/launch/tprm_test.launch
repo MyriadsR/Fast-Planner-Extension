@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<launch>
+    <!-- 启动RViz可视化 -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find t_prm)/launch/tprm_test.rviz" required="false" />
+
+    <!-- 启动球形动态障碍物 -->
+    <node pkg="velObs" type="fake_obs_sphere_sim" name="fake_obs_sphere_sim" output="screen">
+        <rosparam file="$(find t_prm)/launch/tprm_params.yaml" command="load" />
+    </node>
+
+    <!-- 启动T-PRM路径规划测试节点 -->
+    <node pkg="t_prm" type="ros_dynamic_test" name="tprm_dynamic_test" output="screen">
+        <!-- 机器人参数 -->
+        <param name="robot_speed" value="5.0" />  <!-- m/s -->
+
+        <!-- T-PRM参数 -->
+        <param name="num_samples" value="500" />  <!-- 增加采样数量 -->
+        <param name="connection_radius" value="3.0" />  <!-- 增大连接半径 -->
+        <param name="planning_freq" value="1" />  <!-- Hz, 每1秒重新规划一次 -->
+
+        <!-- 环境范围 (应与tprm_params.yaml中的GlobalBox一致) -->
+        <rosparam param="environment_min">[0.0, 0.0, 0.2]</rosparam>
+        <rosparam param="environment_max">[15.0, 15.0, 3.2]</rosparam>
+
+        <!-- 起点和终点 -->
+        <rosparam param="start_position">[1.0, 1.0, 1.5]</rosparam>
+        <rosparam param="goal_position">[14.0, 14.0, 2.5]</rosparam>
+    </node>
+
+</launch>

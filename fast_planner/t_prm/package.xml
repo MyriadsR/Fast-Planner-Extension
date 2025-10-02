@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>t_prm</name>
+  <version>1.0.0</version>
+  <description>
+    T-PRM (Temporal Probabilistic Roadmap) - A C++ library for path planning
+    in dynamic environments with temporal awareness
+  </description>
+
+  <maintainer email="user@todo.todo">Your Name</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>eigen</depend>
+  <depend>visualization_msgs</depend>
+  <depend>nav_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>obj_state_msgs</depend>
+
+  <export>
+    <cpp cflags="-I${prefix}/include" />
+    <cpp lflags="-L${prefix}/lib -lt_prm" />
+  </export>
+
+</package>

@@ -24,12 +24,9 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   visualization_msgs
-  pcl_conversions
-  pcl_ros
   roscpp
   cv_bridge
   sensor_msgs
-  control_msgs
   # gazebo_msgs
   # gazebo_plugins
   geometry_msgs
@@ -39,9 +36,6 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
 
   obj_state_msgs
-  mavros_msgs
-  quadrotor_msgs
-
 )
 
 ## System dependencies are found with CMake's conventions
@@ -185,5 +179,12 @@ add_executable(
   fake_obs_sim
   src/fake_obs.cpp
   )
-  
+
 target_link_libraries(fake_obs_sim ${catkin_LIBRARIES})
+
+add_executable(
+  fake_obs_sphere_sim
+  src/fake_obs_sphere.cpp
+  )
+
+target_link_libraries(fake_obs_sphere_sim ${catkin_LIBRARIES})
