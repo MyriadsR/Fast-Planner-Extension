@@ -4,15 +4,15 @@
 	<node name="rviz" pkg="rviz" type="rviz" args="-d $(find velObs)/launch/planning_demo.rviz" required="true" />
 
 
- <node pkg="velObs" type="fake_obs_sim" name="fake_obs_sim" output="screen">
+ <node pkg="vel_obs" type="fake_obs_sim" name="fake_obs_sim" output="screen">
    
       <rosparam file="$(find velObs)/launch/planning_params.yaml" command="load" />
 
   </node>
 
- <!-- <node pkg="velObs" type="fly_once" name="fly_once" output="screen">
+ <!-- <node pkg="vel_obs" type="fly_once" name="fly_once" output="screen">
 
-      <rosparam file="$(find velObs)/launch/planning_params.yaml" command="load" />
+      <rosparam file="$(find vel_obs)/launch/planning_params.yaml" command="load" />
 
   </node> -->
 

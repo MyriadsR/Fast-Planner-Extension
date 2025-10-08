@@ -10,7 +10,7 @@ add_executable(dynamic_avoidance dynamic_avoidance.cpp)
 target_link_libraries(static_avoidance t_prm)
 target_link_libraries(dynamic_avoidance t_prm)
 
-# ROS example
+# ROS examples
 if(CATKIN_DEVEL_PREFIX)
   # ROS node that integrates with fake_obs_sphere
   add_executable(ros_dynamic_test ros_dynamic_test.cpp)
@@ -24,8 +24,20 @@ if(CATKIN_DEVEL_PREFIX)
     ${catkin_INCLUDE_DIRS}
   )
 
-  # Install the ROS node
-  install(TARGETS ros_dynamic_test
+  # UTVD-TPRM ROS node
+  add_executable(utvd_test UTVD_test.cpp)
+
+  target_link_libraries(utvd_test
+    t_prm
+    ${catkin_LIBRARIES}
+  )
+
+  target_include_directories(utvd_test PRIVATE
+    ${catkin_INCLUDE_DIRS}
+  )
+
+  # Install the ROS nodes
+  install(TARGETS ros_dynamic_test utvd_test
     RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
   )
 endif()

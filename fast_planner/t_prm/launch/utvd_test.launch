@@ -8,15 +8,26 @@
         <rosparam file="$(find t_prm)/launch/tprm_params.yaml" command="load" />
     </node>
 
-    <!-- 启动T-PRM路径规划测试节点 -->
-    <node pkg="t_prm" type="ros_dynamic_test" name="tprm_dynamic_test" output="screen">
+    <!-- 启动UTVD-TPRM路径规划测试节点 -->
+    <node pkg="t_prm" type="utvd_test" name="utvd_tprm_dynamic_test" output="screen">
         <!-- 机器人参数 -->
         <param name="robot_speed" value="5.0" />  <!-- m/s -->
+        <param name="robot_radius" value="0.3" />  <!-- m -->
 
         <!-- T-PRM参数 -->
-        <param name="num_samples" value="500" />  <!-- 增加采样数量 -->
-        <param name="connection_radius" value="3.0" />  <!-- 增大连接半径 -->
+        <param name="num_samples" value="500" />  <!-- 采样数量 -->
+        <param name="connection_radius" value="3.0" />  <!-- 连接半径 -->
         <param name="planning_freq" value="1" />  <!-- Hz, 每1秒重新规划一次 -->
+
+        <!-- UTVD特定参数 -->
+        <param name="use_utvd_safety" value="true" />  <!-- 启用UTVD安全间隔检测 -->
+        <param name="use_bspline_optimization" value="false" />  <!-- 禁用B样条优化 -->
+        <param name="safety_margin" value="0.1" />  <!-- 安全裕度(m) -->
+
+        <!-- UTVD可视化参数 -->
+        <param name="enable_safety_interval_viz" value="true" />  <!-- 启用安全间隔可视化 -->
+        <param name="viz_max_nodes" value="50" />  <!-- 可视化的最大节点数 -->
+        <param name="viz_time_horizon" value="10.0" />  <!-- 可视化时间范围(s) -->
 
         <!-- 环境范围 (应与tprm_params.yaml中的GlobalBox一致) -->
         <rosparam param="environment_min">[0.0, 0.0, 0.2]</rosparam>

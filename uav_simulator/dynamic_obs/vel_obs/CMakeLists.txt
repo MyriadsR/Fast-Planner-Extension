@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10.0)
-project(velObs)
+project(vel_obs)
 
 ADD_COMPILE_OPTIONS(-std=c++14 )
 ADD_COMPILE_OPTIONS(-std=c++14 )

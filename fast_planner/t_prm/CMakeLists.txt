@@ -54,7 +54,7 @@ target_link_libraries(${PROJECT_NAME}
   OpenMP::OpenMP_CXX
 )
 
-# Build ROS example node
+# Build ROS example nodes
 add_executable(ros_dynamic_test examples/ros_dynamic_test.cpp)
 
 target_link_libraries(ros_dynamic_test
@@ -63,6 +63,17 @@ target_link_libraries(ros_dynamic_test
 )
 
 target_include_directories(ros_dynamic_test PRIVATE
+  ${catkin_INCLUDE_DIRS}
+)
+
+add_executable(utvd_test examples/UTVD_test.cpp)
+
+target_link_libraries(utvd_test
+  ${PROJECT_NAME}
+  ${catkin_LIBRARIES}
+)
+
+target_include_directories(utvd_test PRIVATE
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -91,7 +102,7 @@ install(TARGETS ${PROJECT_NAME}
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
-# Install the ROS example node
-install(TARGETS ros_dynamic_test
+# Install the ROS example nodes
+install(TARGETS ros_dynamic_test utvd_test
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )

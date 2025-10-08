@@ -74,6 +74,14 @@ bool StaticSphereObstacle::isColliding(const Vector3d& segment_from, const Vecto
 
 DynamicSphereObstacle::DynamicSphereObstacle(const Vector3d& COM, const Vector3d& velocity, double radius) : DynamicObstacle(COM, velocity), m_radius(radius) {}
 
+/*
+这里碰撞检测使用了一个简化的模型，假设障碍物以恒定速度直线运动。
+如果需要处理更复杂的运动模式，可以考虑：
+1. 分段线性近似：将复杂轨迹近似为多个匀速段
+2. 多项式轨迹：使用高阶多项式描述障碍物运动
+3. 运动预测：结合传感器数据进行运动状态预测
+4. 自适应模型：根据障碍物类型选择不同的运动模型
+*/
 bool DynamicSphereObstacle::isColliding(const Vector3d& point, double& hitTimeFrom, double& hitTimeTo) const {
     if (getVelocity().squaredNorm() < std::numeric_limits<double>::epsilon()) {
         if ((m_COM - point).squaredNorm() < m_radius * m_radius) {

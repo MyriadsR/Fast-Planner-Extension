@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>velObs</name>
+  <name>vel_obs</name>
   <version>0.0.0</version>
-  <description>The velObs package</description>
+  <description>The vel_obs package</description>
 
   <!-- One maintainer tag required, multiple allowed, one person per tag -->
   <!-- Example:  -->

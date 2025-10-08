@@ -108,6 +108,14 @@ Visualization Manager:
         start_goal: true
       Queue Size: 100
       Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /utvd_safety_intervals
+      Name: UTVD Safety Intervals
+      Namespaces:
+        utvd_safety_intervals: true
+      Queue Size: 100
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
