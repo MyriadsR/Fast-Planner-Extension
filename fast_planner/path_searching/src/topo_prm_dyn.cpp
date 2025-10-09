@@ -1,32 +1,18 @@
-/**
-* This file is part of Fast-Planner.
-*
-* Copyright 2019 Boyu Zhou, Aerial Robotics Group, Hong Kong University of Science and Technology, <uav.ust.hk>
-* Developed by Boyu Zhou <bzhouai at connect dot ust dot hk>, <uv dot boyuzhou at gmail dot com>
-* for more information see <https://github.com/HKUST-Aerial-Robotics/Fast-Planner>.
-* If you use this code, please cite the respective publications as
-* listed on the above website.
-*
-* Fast-Planner is free software: you can redistribute it and/or modify
-* it under the terms of the GNU Lesser General Public License as published by
-* the Free Software Foundation, either version 3 of the License, or
-* (at your option) any later version.
-*
-* Fast-Planner is distributed in the hope that it will be useful,
-* but WITHOUT ANY WARRANTY; without even the implied warranty of
-* MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-* GNU General Public License for more details.
-*
-* You should have received a copy of the GNU Lesser General Public License
-* along with Fast-Planner. If not, see <http://www.gnu.org/licenses/>.
-*/
+/*
+ * @Author: xzr && 1841953204@qq.com
+ * @Date: 2025-10-08 22:49:40
+ * @LastEditors: xzr && 1841953204@qq.com
+ * @LastEditTime: 2025-10-09 20:07:28
+ * @FilePath: /Fast_Planner_ws/src/Fast-Planner-Extension/fast_planner/path_searching/src/topo_prm_dyn.cpp
+ * @Description: 动态拓扑PRM
+ * 
+ * Copyright (c) 2025 by 1841953204@qq.com, All Rights Reserved. 
+ */
 
-
-
-#include <path_searching/topo_prm.h>
+#include <path_searching/topo_prm_dyn.h>
 #include <thread>
 
-namespace fast_planner {
+namespace topo_dyn_planner {
 TopologyPRM::TopologyPRM(/* args */) {}
 
 TopologyPRM::~TopologyPRM() {}
@@ -37,31 +23,19 @@ void TopologyPRM::init(ros::NodeHandle& nh) {
   rand_pos_ = uniform_real_distribution<double>(-1.0, 1.0);
 
   // init parameter
-  nh.param("topo_prm/sample_inflate_x", sample_inflate_(0), -1.0);
-  nh.param("topo_prm/sample_inflate_y", sample_inflate_(1), -1.0);
-  nh.param("topo_prm/sample_inflate_z", sample_inflate_(2), -1.0);
-  nh.param("topo_prm/clearance", clearance_, -1.0);
-  nh.param("topo_prm/short_cut_num", short_cut_num_, -1);
-  nh.param("topo_prm/reserve_num", reserve_num_, -1);
-  nh.param("topo_prm/ratio_to_short", ratio_to_short_, -1.0);
-  nh.param("topo_prm/max_sample_num", max_sample_num_, -1);
-  nh.param("topo_prm/max_sample_time", max_sample_time_, -1.0);
-  nh.param("topo_prm/max_raw_path", max_raw_path_, -1);
-  nh.param("topo_prm/max_raw_path2", max_raw_path2_, -1);
-  nh.param("topo_prm/parallel_shortcut", parallel_shortcut_, false);
-  resolution_ = edt_environment_->sdf_map_->getResolution();
-  offset_ = Eigen::Vector3d(0.5, 0.5, 0.5) - edt_environment_->sdf_map_->getOrigin() / resolution_;
-
-  for (int i = 0; i < max_raw_path_; ++i) {
-    casters_.push_back(RayCaster());
-  }
 }
 
-void TopologyPRM::findTopoPaths(Eigen::Vector3d start, Eigen::Vector3d end,
-                                vector<Eigen::Vector3d> start_pts, vector<Eigen::Vector3d> end_pts,
-                                list<GraphNode::Ptr>& graph, vector<vector<Eigen::Vector3d>>& raw_paths,
-                                vector<vector<Eigen::Vector3d>>& filtered_paths,
-                                vector<vector<Eigen::Vector3d>>& select_paths) {
+void TopologyPRM::findTopoPaths(
+    Eigen::Vector3d start,           // 起点坐标
+    Eigen::Vector3d end,             // 终点坐标  
+    vector<Eigen::Vector3d> start_pts, // 起点附近采样点
+    vector<Eigen::Vector3d> end_pts,   // 终点附近采样点
+    list<GraphNode::Ptr>& graph,      // 输出的PRM图结构
+    vector<vector<Eigen::Vector3d>>& raw_paths,     // 原始搜索路径
+    vector<vector<Eigen::Vector3d>>& filtered_paths, // 过滤后的路径
+    vector<vector<Eigen::Vector3d>>& select_paths   // 最终选择的路径
+)
+{
   ros::Time t1, t2;
 
   double graph_time, search_time, short_time, prune_time, select_time;
@@ -69,7 +43,10 @@ void TopologyPRM::findTopoPaths(Eigen::Vector3d start, Eigen::Vector3d end,
   t1 = ros::Time::now();
 
   start_pts_ = start_pts;
-  end_pts_ = end_pts;
+  end_pts_ = end_pts_;
+  
+  // 设置机器人速度
+  tprm::HolonomicRobot::movement_speed = robot_speed_;
 
   graph = createGraph(start, end);
 
@@ -119,6 +96,7 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
 
   /* init the start, end and sample region */
   graph_.clear();
+  line_step_ = 0.5 * robot_speed_;   // 初始步长为机器人速度的一半
   // collis_.clear();
 
   GraphNode::Ptr start_node = GraphNode::Ptr(new GraphNode(start, GraphNode::Guard, 0));
@@ -127,7 +105,6 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
   graph_.push_back(start_node);
   graph_.push_back(end_node);
 
-  // 以起点终点为轴长的椭球作为采样区域
   // sample region
   sample_r_(0) = 0.5 * (end - start).norm() + sample_inflate_(0);
   sample_r_(1) = sample_inflate_(1);
@@ -154,20 +131,35 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
   ros::Time t1, t2;
   while (sample_time < max_sample_time_ && sample_num < max_sample_num_) {
     t1 = ros::Time::now();
-    
-    // 采样点在椭球内
+
     pt = getSample();
     ++sample_num;
-    double dist;
-    Eigen::Vector3d grad;
-    // edt_environment_->evaluateEDTWithGrad(pt, -1.0, dist, grad);
-    dist = edt_environment_->evaluateCoarseEDT(pt, -1.0);
-    if (dist <= clearance_) {
+    // double dist;
+    // // edt_environment_->evaluateEDTWithGrad(pt, -1.0, dist, grad);
+    // dist = edt_environment_->evaluateCoarseEDT(pt, -1.0);
+    
+    // 订阅障碍物状态
+    dyn_obs_sub_ = nh_.subscribe("/obj_states", 10, &TopologyPRM::dynObstaclesCallback, this);
+    goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &TopologyPRM::goalCallback, this);
+    
+    // 检查采样点是否与在静态障碍物中
+    bool is_blocked = false;
+    for (const auto &obstacle : sta_obstacles_)
+    {
+        if (obstacle->isColliding(pt))
+        {
+            is_blocked = true;
+            break;
+        }
+    }
+
+    if (is_blocked) {
       sample_time += (ros::Time::now() - t1).toSec();
       continue;
     }
 
     /* find visible guard */
+    // 这里将空间和时间解耦考虑，先只考虑静态障碍物
     vector<GraphNode::Ptr> visib_guards = findVisibGuard(pt);
     if (visib_guards.size() == 0) {
       GraphNode::Ptr guard = GraphNode::Ptr(new GraphNode(pt, GraphNode::Guard, ++node_id));
@@ -176,6 +168,8 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
       /* try adding new connection between two guard */
       // vector<pair<GraphNode::Ptr, GraphNode::Ptr>> sort_guards =
       // sortVisibGuard(visib_guards);
+
+      // 判断新路径和已有路径是否同拓扑
       bool need_connect = needConnection(visib_guards[0], visib_guards[1], pt);
       if (!need_connect) {
         sample_time += (ros::Time::now() - t1).toSec();
@@ -206,6 +200,29 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
   // return searchPaths(start_node, end_node);
 }
 
+void TopologyPRM::dynObstaclesCallback(const obj_state_msgs::ObjectsStates::ConstPtr &msg)
+{
+    dyn_obstacles_.clear();
+
+    for (const auto &state : msg->states)
+    {
+        tprm::Vector3d position(state.position.x, state.position.y, state.position.z);
+        tprm::Vector3d velocity(state.velocity.x, state.velocity.y, state.velocity.z);
+        double radius = state.size.x / 2.0 + safety_margin_; // 添加安全裕度
+
+        auto obstacle = std::make_shared<tprm::DynamicSphereObstacle>(position, velocity, radius);
+        dyn_obstacles_.push_back(obstacle);
+    }
+
+    ROS_INFO_THROTTLE(2.0, "Received %lu dynamic obstacles with UTVD safety margin", dyn_obstacles_.size());
+}
+
+void TopologyPRM::goalCallback(const geometry_msgs::PoseStamped::ConstPtr &msg)
+{
+    goal_pos_ = tprm::Vector3d(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+    ROS_INFO("New goal received: [%.2f, %.2f, %.2f]", goal_pos_[0], goal_pos_[1], goal_pos_[2]);
+}
+
 vector<GraphNode::Ptr> TopologyPRM::findVisibGuard(Eigen::Vector3d pt) {
   vector<GraphNode::Ptr> visib_guards;
   Eigen::Vector3d pc;
@@ -216,7 +233,7 @@ vector<GraphNode::Ptr> TopologyPRM::findVisibGuard(Eigen::Vector3d pt) {
   for (list<GraphNode::Ptr>::iterator iter = graph_.begin(); iter != graph_.end(); ++iter) {
     if ((*iter)->type_ == GraphNode::Connector) continue;
 
-    if (lineVisib(pt, (*iter)->pos_, resolution_, pc)) {
+    if (lineVisibStatic(pt, (*iter)->pos_, line_step_, pc)) {
       visib_guards.push_back((*iter));
       ++visib_num;
       if (visib_num > 2) break;
@@ -226,7 +243,12 @@ vector<GraphNode::Ptr> TopologyPRM::findVisibGuard(Eigen::Vector3d pt) {
   return visib_guards;
 }
 
-bool TopologyPRM::needConnection(GraphNode::Ptr g1, GraphNode::Ptr g2, Eigen::Vector3d pt) {
+bool TopologyPRM::needConnection(
+    GraphNode::Ptr g1,        // 第一个Guard节点
+    GraphNode::Ptr g2,        // 第二个Guard节点  
+    Eigen::Vector3d pt        // 新采样点（潜在的Connector节点）
+)
+{
   vector<Eigen::Vector3d> path1(3), path2(3);
   path1[0] = g1->pos_;
   path1[1] = pt;
@@ -239,6 +261,7 @@ bool TopologyPRM::needConnection(GraphNode::Ptr g1, GraphNode::Ptr g2, Eigen::Ve
   bool has_connect = false;
   for (int i = 0; i < g1->neighbors_.size(); ++i) {
     for (int j = 0; j < g2->neighbors_.size(); ++j) {
+      // 查找g1和g2的共同邻居节点（即现有的Connector节点）
       if (g1->neighbors_[i]->id_ == g2->neighbors_[j]->id_) {
         path2[1] = g1->neighbors_[i]->pos_;
         bool same_topo = sameTopoPath(path1, path2, 0.0);
@@ -268,26 +291,96 @@ Eigen::Vector3d TopologyPRM::getSample() {
   return pt;
 }
 
-bool TopologyPRM::lineVisib(const Eigen::Vector3d& p1, const Eigen::Vector3d& p2, double thresh,
-                            Eigen::Vector3d& pc, int caster_id) {
-  Eigen::Vector3d ray_pt;
-  Eigen::Vector3i pt_id;
-  double dist;
+bool TopologyPRM::lineVisibStatic(
+    const Eigen::Vector3d& p1,
+    const Eigen::Vector3d& p2,
+    double base_step,
+    Eigen::Vector3d& pc
+)
+{
+    Eigen::Vector3d dir = p2 - p1;
+    double total_len = dir.norm();
+    if (total_len < 1e-6) return true;
+    dir.normalize();
 
-  casters_[caster_id].setInput(p1 / resolution_, p2 / resolution_);
-  while (casters_[caster_id].step(ray_pt)) {
-    pt_id(0) = ray_pt(0) + offset_(0);
-    pt_id(1) = ray_pt(1) + offset_(1);
-    pt_id(2) = ray_pt(2) + offset_(2);
-    dist = edt_environment_->sdf_map_->getDistance(pt_id);
-    if (dist <= thresh) {
-      edt_environment_->sdf_map_->indexToPos(pt_id, pc);
-      return false;
+    double s = 0.0;
+    Eigen::Vector3d hit_pt;
+    bool blocked = false;
+
+    while (s <= total_len)
+    {
+        Eigen::Vector3d pt = p1 + dir * s;
+
+        // // ========= 动态步长策略 =========
+        // // 这里给出一个简易版本：
+        // // step = max( base_step * 0.2, min( base_step * 3, 与障碍的最近距离 * 0.5 ) )
+        // // 这里我们仅根据 staticObstacles 距离估计
+        // double min_dist = std::numeric_limits<double>::infinity();
+        // for (const auto &obstacle : staticObstacles)
+        // {
+        //     double d = obstacle->distanceTo(pt);
+        //     if (d < min_dist) min_dist = d;
+        // }
+
+        // double step = std::clamp(min_dist * 0.5, base_step * 0.2, base_step * 3.0);
+        double step = base_step; // 先使用固定步长，后续可改进
+
+        // ========= 并行检测碰撞 =========
+        blocked = false;
+        #pragma omp parallel for shared(blocked)
+        for (int i = 0; i < sta_obstacles_.size(); ++i)
+        {
+            if (blocked) continue; // 若已检测到碰撞则跳过
+            if (sta_obstacles_[i]->isColliding(pt))
+            {
+                #pragma omp critical
+                {
+                    if (!blocked)
+                    {
+                        blocked = true;
+                        hit_pt = pt;
+                    }
+                }
+            }
+        }
+
+        if (blocked)
+        {
+            pc = hit_pt;
+            return false;
+        }
+
+        s += step;
     }
-  }
-  return true;
+
+    // ========= 最后检查终点 =========
+    #pragma omp parallel for shared(blocked)
+    for (int i = 0; i < sta_obstacles_.size(); ++i)
+    {
+        if (blocked) continue;
+        if (sta_obstacles_[i]->isColliding(p2))
+        {
+            #pragma omp critical
+            {
+                if (!blocked)
+                {
+                    blocked = true;
+                    hit_pt = p2;
+                }
+            }
+        }
+    }
+
+    if (blocked)
+    {
+        pc = hit_pt;
+        return false;
+    }
+
+    return true;
 }
 
+// 删除没有邻居的节点或者只有一个邻居的节点
 void TopologyPRM::pruneGraph() {
   /* prune useless node */
   if (graph_.size() > 2) {
@@ -403,7 +496,7 @@ bool TopologyPRM::sameTopoPath(const vector<Eigen::Vector3d>& path1,
 
   double max_len = max(len1, len2);
 
-  int pt_num = ceil(max_len / resolution_);
+  int pt_num = ceil(max_len / line_step_);
 
   // std::cout << "pt num: " << pt_num << std::endl;
 
@@ -412,7 +505,10 @@ bool TopologyPRM::sameTopoPath(const vector<Eigen::Vector3d>& path1,
 
   Eigen::Vector3d pc;
   for (int i = 0; i < pt_num; ++i) {
-    if (!lineVisib(pts1[i], pts2[i], thresh, pc)) {
+    // if (!lineVisib(pts1[i], pts2[i], thresh, pc)) {
+    //   return false;
+    // }
+    if (!lineVisibStatic(pts1[i], pts2[i], line_step_, pc)) {
       return false;
     }
   }
@@ -724,4 +820,4 @@ bool TopologyPRM::triangleVisib(Eigen::Vector3d pt, Eigen::Vector3d p1, Eigen::V
   return true;
 }
 // TopologyPRM::
-}  // namespace fast_planner
+}// namespace topo_dyn_planner

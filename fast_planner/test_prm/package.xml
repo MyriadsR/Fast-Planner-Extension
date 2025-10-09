@@ -1,0 +1,28 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>test_prm</name>
+  <version>0.0.0</version>
+  <description>Test package for PRM graph creation and visualization</description>
+
+  <maintainer email="test@example.com">test</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <build_depend>roscpp</build_depend>
+  <build_depend>std_msgs</build_depend>
+  <build_depend>visualization_msgs</build_depend>
+  <build_depend>geometry_msgs</build_depend>
+  <build_depend>obj_state_msgs</build_depend>
+  <build_depend>t_prm</build_depend>
+
+  <exec_depend>roscpp</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>obj_state_msgs</exec_depend>
+  <exec_depend>t_prm</exec_depend>
+
+  <export>
+  </export>
+</package>

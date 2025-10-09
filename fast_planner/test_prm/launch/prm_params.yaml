@@ -1,0 +1,13 @@
+# PRM测试参数配置
+
+# 机器人速度 (m/s)
+robot_speed: 1.0
+
+# 最大采样时间 (秒)
+max_sample_time: 1.0
+
+# 最大采样数量
+max_sample_num: 2000
+
+# 采样区域膨胀参数 [x, y, z]
+sample_inflate_x: [3.0, 3.0, 1.5]

@@ -1,0 +1,12 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- 启动RViz -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find static_obs)/launch/static_demo.rviz" required="true" />
+
+  <!-- 启动静态障碍物发布节点 -->
+  <node pkg="static_obs" type="fake_static_obs_sim" name="fake_static_obs_sim" output="screen">
+    <rosparam file="$(find static_obs)/launch/static_params.yaml" command="load" />
+  </node>
+
+</launch>

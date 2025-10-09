@@ -1,0 +1,10 @@
+WorldFrameName: 'map'
+
+# 全局边界框设置
+GlobalBox_min:              [-15.0, -15.0, 0.2]
+GlobalBox_size:             [30.0, 30.0, 3.0]
+
+# 静态球体障碍物参数
+StaticObsSize_min:          [0.8, 0.8, 0.8]    # 最小直径
+StaticObsSize_max:          [2.5, 2.5, 2.5]    # 最大直径
+StaticObsNum:               20                   # 静态障碍物数量

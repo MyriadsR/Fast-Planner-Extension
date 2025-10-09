@@ -1,0 +1,17 @@
+<?xml version="1.0"?>
+<launch>
+
+  <!-- 启动RViz -->
+  <node name="rviz" pkg="rviz" type="rviz" args="-d $(find test_prm)/launch/prm_test.rviz" required="false" />
+
+  <!-- 启动静态障碍物发布节点 -->
+  <node pkg="static_obs" type="fake_static_obs_sim" name="fake_static_obs_sim" output="screen">
+    <rosparam file="$(find static_obs)/launch/static_params.yaml" command="load" />
+  </node>
+
+  <!-- 启动PRM图测试节点 -->
+  <node pkg="test_prm" type="test_prm_graph_node" name="test_prm_graph" output="screen">
+    <rosparam file="$(find test_prm)/launch/prm_params.yaml" command="load" />
+  </node>
+
+</launch>
