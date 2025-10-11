@@ -2,7 +2,7 @@
  * @Author: xzr && 1841953204@qq.com
  * @Date: 2025-10-08 22:49:40
  * @LastEditors: xzr && 1841953204@qq.com
- * @LastEditTime: 2025-10-09 20:07:28
+ * @LastEditTime: 2025-10-11 21:31:05
  * @FilePath: /Fast_Planner_ws/src/Fast-Planner-Extension/fast_planner/path_searching/src/topo_prm_dyn.cpp
  * @Description: 动态拓扑PRM
  * 
@@ -91,12 +91,13 @@ void TopologyPRM::findTopoPaths(
             << ", select: " << select_time << std::endl;
 }
 
-list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vector3d end) {
+list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vector3d end)
+{
   // std::cout << "[Topo]: searching----------------------" << std::endl;
 
   /* init the start, end and sample region */
   graph_.clear();
-  line_step_ = 0.5 * robot_speed_;   // 初始步长为机器人速度的一半
+  line_step_ = 0.5 * robot_speed_; // 初始步长为机器人速度的一半
   // collis_.clear();
 
   GraphNode::Ptr start_node = GraphNode::Ptr(new GraphNode(start, GraphNode::Guard, 0));
@@ -129,7 +130,8 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
   double sample_time = 0.0;
   Eigen::Vector3d pt;
   ros::Time t1, t2;
-  while (sample_time < max_sample_time_ && sample_num < max_sample_num_) {
+  while (sample_time < max_sample_time_ && sample_num < max_sample_num_)
+  {
     t1 = ros::Time::now();
 
     pt = getSample();
@@ -137,23 +139,25 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
     // double dist;
     // // edt_environment_->evaluateEDTWithGrad(pt, -1.0, dist, grad);
     // dist = edt_environment_->evaluateCoarseEDT(pt, -1.0);
-    
+
     // 订阅障碍物状态
+    static_obs_sub_ = nh_.subscribe("/static_obj_states", 10, &TopologyPRM::staticObsCallback, this);
     dyn_obs_sub_ = nh_.subscribe("/obj_states", 10, &TopologyPRM::dynObstaclesCallback, this);
     goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &TopologyPRM::goalCallback, this);
-    
+
     // 检查采样点是否与在静态障碍物中
     bool is_blocked = false;
     for (const auto &obstacle : sta_obstacles_)
     {
-        if (obstacle->isColliding(pt))
-        {
-            is_blocked = true;
-            break;
-        }
+      if (obstacle->isColliding(pt))
+      {
+        is_blocked = true;
+        break;
+      }
     }
 
-    if (is_blocked) {
+    if (is_blocked)
+    {
       sample_time += (ros::Time::now() - t1).toSec();
       continue;
     }
@@ -161,43 +165,114 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
     /* find visible guard */
     // 这里将空间和时间解耦考虑，先只考虑静态障碍物
     vector<GraphNode::Ptr> visib_guards = findVisibGuard(pt);
-    if (visib_guards.size() == 0) {
+    if (visib_guards.size() == 0)
+    {
       GraphNode::Ptr guard = GraphNode::Ptr(new GraphNode(pt, GraphNode::Guard, ++node_id));
       graph_.push_back(guard);
-    } else if (visib_guards.size() == 2) {
+    }
+    else if (visib_guards.size() == 2)
+    {
       /* try adding new connection between two guard */
       // vector<pair<GraphNode::Ptr, GraphNode::Ptr>> sort_guards =
       // sortVisibGuard(visib_guards);
 
-      // 判断新路径和已有路径是否同拓扑
-      bool need_connect = needConnection(visib_guards[0], visib_guards[1], pt);
-      if (!need_connect) {
+      // 考虑动态障碍物时，需要检查两个Guard和新采样点形成的两条线段的安全区间是否有重叠
+      // 计算2个Guard节点和新采样点的安全时间区间
+      auto visib_guard_1 = visib_guards[0];
+      auto visib_guard_2 = visib_guards[1];
+      auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->position, dyn_obstacles_);
+      auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->position, dyn_obstacles_);
+      auto safe_intervals_pt = computeSafeIntervals(pt, dyn_obstacles_);
+
+      // 将安全时间区间绑定guard节点
+      safety_data_[visib_guard_1->id_] = safe_intervals_1;
+      safety_data_[visib_guard_2->id_] = safe_intervals_2;
+
+      // 检查边的安全时间窗口
+      safe_edge_windows_1_ = computeEdgeSafeWindow(
+          visib_guard_1->position, pt, dyn_obstacles_, robot_speed_);
+      safe_edge_windows_2_ = computeEdgeSafeWindow(
+          pt, visib_guard_2->position, dyn_obstacles_, robot_speed_);
+      
+      // 如果两个边的安全时间窗口没有交集，则继续采样
+      auto intervalsOverlap = [](const std::vector<std::pair<double, double>> &a,
+                                 const std::vector<std::pair<double, double>> &b,
+                                 double eps = 1e-6) -> bool {
+        if (a.empty() || b.empty()) return false;
+        size_t ia = 0, ib = 0;
+        // assume intervals are sorted and non-overlapping within each vector (mergeIntervals used earlier)
+        while (ia < a.size() && ib < b.size()) {
+          double a_start = a[ia].first, a_end = a[ia].second;
+          double b_start = b[ib].first, b_end = b[ib].second;
+
+          // consider overlap when (a_start <= b_end) && (b_start <= a_end)
+          if (a_start <= b_end + eps && b_start <= a_end + eps) {
+            // also ensure the overlap has positive duration (or within eps)
+            double overlap_start = std::max(a_start, b_start);
+            double overlap_end = std::min(a_end, b_end);
+            if (overlap_end + eps >= overlap_start) return true;
+          }
+
+          // advance the interval with the smaller end
+          if (a_end < b_end) ++ia; else ++ib;
+        }
+        return false;
+      };
+
+      // 如果两个边的安全时间窗口没有交集，则继续采样
+      if (!intervalsOverlap(safe_edge_windows_1_, safe_edge_windows_2_)) {
         sample_time += (ros::Time::now() - t1).toSec();
         continue;
       }
-      // new useful connection needed, add new connector
-      GraphNode::Ptr connector = GraphNode::Ptr(new GraphNode(pt, GraphNode::Connector, ++node_id));
-      graph_.push_back(connector);
-
-      // connect guards
-      visib_guards[0]->neighbors_.push_back(connector);
-      visib_guards[1]->neighbors_.push_back(connector);
-
-      connector->neighbors_.push_back(visib_guards[0]);
-      connector->neighbors_.push_back(visib_guards[1]);
     }
 
-    sample_time += (ros::Time::now() - t1).toSec();
+    // 判断新路径和已有路径是否同拓扑
+    bool need_connect = needConnection(visib_guards[0], visib_guards[1], pt);
+    if (!need_connect)
+    {
+      sample_time += (ros::Time::now() - t1).toSec();
+      continue;
+    }
+    // new useful connection needed, add new connector
+    GraphNode::Ptr connector = GraphNode::Ptr(new GraphNode(pt, GraphNode::Connector, ++node_id));
+    graph_.push_back(connector);
+
+    // connect guards
+    visib_guards[0]->neighbors_.push_back(connector);
+    visib_guards[1]->neighbors_.push_back(connector);
+
+    connector->neighbors_.push_back(visib_guards[0]);
+    connector->neighbors_.push_back(visib_guards[1]);
   }
 
-  /* print record */
-  std::cout << "[Topo]: sample num: " << sample_num;
+  sample_time += (ros::Time::now() - t1).toSec();
+}
 
-  pruneGraph();
-  // std::cout << "[Topo]: node num: " << graph_.size() << std::endl;
+/* print record */
+std::cout << "[Topo]: sample num: " << sample_num;
 
-  return graph_;
-  // return searchPaths(start_node, end_node);
+pruneGraph();
+// std::cout << "[Topo]: node num: " << graph_.size() << std::endl;
+
+return graph_;
+// return searchPaths(start_node, end_node);
+}
+
+void TopologyPRM::staticObsCallback(const obj_state_msgs::ObjectsStates::ConstPtr &msg)
+{
+  sta_obstacles_.clear();
+
+  for (const auto &state : msg->states)
+  {
+    Eigen::Vector3d position(state.position.x, state.position.y, state.position.z);
+    double radius = state.size.x / 2.0;
+
+    auto obstacle = std::make_shared<tprm::StaticSphereObstacle>(position, radius);
+    sta_obstacles_.push_back(obstacle);
+  }
+
+  has_obstacles_ = true;
+  ROS_INFO_THROTTLE(5.0, "Received %lu static obstacles", sta_obstacles_.size());
 }
 
 void TopologyPRM::dynObstaclesCallback(const obj_state_msgs::ObjectsStates::ConstPtr &msg)
@@ -250,6 +325,7 @@ bool TopologyPRM::needConnection(
 )
 {
   vector<Eigen::Vector3d> path1(3), path2(3);
+  GraphNode::Ptr connector;
   path1[0] = g1->pos_;
   path1[1] = pt;
   path1[2] = g2->pos_;
@@ -264,7 +340,8 @@ bool TopologyPRM::needConnection(
       // 查找g1和g2的共同邻居节点（即现有的Connector节点）
       if (g1->neighbors_[i]->id_ == g2->neighbors_[j]->id_) {
         path2[1] = g1->neighbors_[i]->pos_;
-        bool same_topo = sameTopoPath(path1, path2, 0.0);
+        connector = g1->neighbors_[i];
+        bool same_topo = sameTopoPathUTVD(g1, g2, connector, pt);
         if (same_topo) {
           // get shorter connection ?
           if (pathLength(path1) < pathLength(path2)) {
@@ -410,6 +487,205 @@ void TopologyPRM::pruneGraph() {
   }
 }
 
+/**
+ * @brief 计算点位置的安全时间间隔
+ * @param position 空间位置
+ * @param obstacles 动态障碍物列表
+ * @param robot_radius 机器人半径
+ * @return 安全时间间隔列表
+ */
+std::vector<std::pair<double, double>> TopologyPRM::computeSafeIntervals(
+    const tprm::Vector3d &position,
+    const std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> &obstacles,
+    double robot_radius = 0.3)
+{
+
+  std::vector<std::pair<double, double>> safe_intervals;
+  std::vector<std::pair<double, double>> collision_intervals;
+
+  // 收集所有障碍物的碰撞时间间隔
+  for (const auto &obstacle : obstacles)
+  {
+    double hit_time_from, hit_time_to;
+    if (obstacle->isColliding(position, hit_time_from, hit_time_to))
+    {
+      collision_intervals.emplace_back(hit_time_from, hit_time_to);
+    }
+  }
+
+  // 合并重叠的碰撞间隔
+  collision_intervals = mergeIntervals(collision_intervals);
+
+  // 从碰撞间隔推导安全间隔
+  if (collision_intervals.empty())
+  {
+    // 如果没有碰撞，整个时间域都是安全的
+    safe_intervals.emplace_back(0.0, std::numeric_limits<double>::infinity());
+  }
+  else
+  {
+    // 第一个安全间隔：从0到第一个碰撞开始
+    if (collision_intervals[0].first > 0)
+    {
+      safe_intervals.emplace_back(0.0, collision_intervals[0].first);
+    }
+
+    // 中间的安全间隔
+    for (size_t i = 0; i < collision_intervals.size() - 1; ++i)
+    {
+      double safe_start = collision_intervals[i].second;
+      double safe_end = collision_intervals[i + 1].first;
+      if (safe_start < safe_end)
+      {
+        safe_intervals.emplace_back(safe_start, safe_end);
+      }
+    }
+
+    // 最后一个安全间隔：从最后一个碰撞结束到无穷大
+    if (!collision_intervals.empty() &&
+        collision_intervals.back().second < std::numeric_limits<double>::infinity())
+    {
+      safe_intervals.emplace_back(collision_intervals.back().second,
+                                  std::numeric_limits<double>::infinity());
+    }
+  }
+
+  return safe_intervals;
+}
+
+std::vector<std::pair<double, double>> TopologyPRM::mergeIntervals(
+    std::vector<std::pair<double, double>> intervals)
+{
+
+  if (intervals.empty())
+    return intervals;
+
+  std::sort(intervals.begin(), intervals.end());
+  std::vector<std::pair<double, double>> merged;
+  merged.push_back(intervals[0]);
+
+  for (size_t i = 1; i < intervals.size(); ++i)
+  {
+    if (intervals[i].first <= merged.back().second)
+    {
+      merged.back().second = std::max(merged.back().second, intervals[i].second);
+    }
+    else
+    {
+      merged.push_back(intervals[i]);
+    }
+  }
+
+  return merged;
+}
+
+std::vector<std::pair<double, double>> TopologyPRM::computeEdgeSafeWindow(
+    const tprm::Vector3d &from,
+    const tprm::Vector3d &to,
+    const std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> &obstacles,
+    double robot_speed)
+{
+
+  double distance = (to - from).norm();
+  double travel_time = distance / robot_speed;
+
+  std::vector<std::pair<double, double>> safe_windows;
+  std::vector<std::pair<double, double>> collision_windows;
+
+  // 对每个障碍物计算碰撞时间窗口
+  for (const auto &obstacle : obstacles)
+  {
+    auto window = computeObstacleCollisionWindow(from, to, obstacle, robot_speed);
+    if (window.first < window.second)
+    {
+      collision_windows.push_back(window);
+    }
+  }
+
+  // 合并碰撞窗口
+  collision_windows = mergeIntervals(collision_windows);
+
+  // 推导安全窗口（与安全间隔计算类似）
+  if (collision_windows.empty())
+  {
+    safe_windows.emplace_back(0.0, std::numeric_limits<double>::infinity());
+  }
+  else
+  {
+    if (collision_windows[0].first > 0)
+    {
+      safe_windows.emplace_back(0.0, collision_windows[0].first);
+    }
+
+    for (size_t i = 0; i < collision_windows.size() - 1; ++i)
+    {
+      double safe_start = collision_windows[i].second;
+      double safe_end = collision_windows[i + 1].first;
+      if (safe_start < safe_end)
+      {
+        safe_windows.emplace_back(safe_start, safe_end);
+      }
+    }
+
+    if (collision_windows.back().second < std::numeric_limits<double>::infinity())
+    {
+      safe_windows.emplace_back(collision_windows.back().second,
+                                std::numeric_limits<double>::infinity());
+    }
+  }
+
+  return safe_windows;
+}
+
+std::pair<double, double> TopologyPRM::computeObstacleCollisionWindow(
+    const tprm::Vector3d &from,
+    const tprm::Vector3d &to,
+    const std::shared_ptr<tprm::DynamicSphereObstacle> &obstacle,
+    double robot_speed)
+{
+
+  // 简化计算：使用线段与移动球体的碰撞检测
+  // 实际实现应根据UTVD理论进行精确计算
+
+  double distance = (to - from).norm();
+  double travel_time = distance / robot_speed;
+
+  // 这里使用简化的线性插值碰撞检测
+  // 实际UTVD实现应考虑障碍物运动轨迹和机器人运动轨迹的相对关系
+
+  // 记录最早的碰撞开始时间和最晚的碰撞结束时间
+  double min_collision_time = std::numeric_limits<double>::infinity();
+  double max_collision_time = 0.0;
+
+  // 采样检测点
+  const int samples = 10;
+  for (int i = 0; i <= samples; ++i)
+  {
+    double t = static_cast<double>(i) / samples;
+    tprm::Vector3d point = from + t * (to - from);
+    double segment_time = t * travel_time;
+
+    double hit_from, hit_to;
+    if (obstacle->isColliding(point, hit_from, hit_to))
+    {
+      // 调整碰撞时间考虑机器人的到达时间
+      double adjusted_from = std::max(0.0, hit_from - segment_time);
+      double adjusted_to = std::max(0.0, hit_to - segment_time);
+
+      // 取所有采样点中最早的碰撞开始时间和最晚的碰撞结束时间
+      min_collision_time = std::min(min_collision_time, adjusted_from);
+      max_collision_time = std::max(max_collision_time, adjusted_to);
+    }
+  }
+
+  if (min_collision_time < std::numeric_limits<double>::infinity())
+  {
+    return {min_collision_time, max_collision_time};
+  }
+
+  return {std::numeric_limits<double>::infinity(), 0.0};
+}
+
 vector<vector<Eigen::Vector3d>> TopologyPRM::pruneEquivalent(vector<vector<Eigen::Vector3d>>& paths) {
   vector<vector<Eigen::Vector3d>> pruned_paths;
   if (paths.size() < 1) return pruned_paths;
@@ -514,6 +790,150 @@ bool TopologyPRM::sameTopoPath(const vector<Eigen::Vector3d>& path1,
   }
 
   return true;
+}
+
+bool TopologyPRM::sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode::Ptr guard2,
+                    const GraphNode::Ptr connector, const Eigen::Vector3d pt){
+  // 构造路径
+  std::array<Eigen::Vector3d, 3> path_new = {guard1->pos_, pt, guard2->pos_};
+  std::array<Eigen::Vector3d, 3> path_exist = {guard1->pos_, connector->pos_, guard2->pos_};
+  
+  // 计算边的安全时间窗口
+  safe_edge_windows_3_ = computeEdgeSafeWindow(guard1->pos_, connector->pos_, dyn_obstacles_, robot_speed_);
+  safe_edge_windows_4_ = computeEdgeSafeWindow(connector->pos_, guard2->pos_, dyn_obstacles_, robot_speed_);
+  
+  // 计算两个边的安全时间窗口的交集
+  auto corridors1 = intersectIntervals(safe_edge_windows_1_, safe_edge_windows_2_);
+  auto corridors2 = intersectIntervals(safe_edge_windows_3_, safe_edge_windows_4_);
+
+  // 如果没有重叠，则返回false
+  if (corridors1.empty() || corridors2.empty()) return false;
+
+  // 可选，检查反向路径
+
+  // 构造 PathAdapter，映射 s ∈ [0,1] → 空间 & 时间
+  struct PathAdapter
+  {
+    std::function<Eigen::Vector3d(double)> posAt;
+    std::function<double(double)> timeAt;
+  };
+
+  auto makePathAdapter = [&](const std::array<Eigen::Vector3d, 3> &path, const std::pair<double, double> &corr)
+  {
+    double t_start = corr.first;
+    double t_end = corr.second;
+    double T = t_end - t_start;
+    PathAdapter P;
+    P.posAt = [=](double s) -> Eigen::Vector3d
+    {
+      if (s <= 0.5)
+      {
+        double u = s / 0.5;
+        return (1.0 - u) * path[0] + u * path[1];
+      }
+      else
+      {
+        double u = (s - 0.5) / 0.5;
+        return (1.0 - u) * path[1] + u * path[2];
+      }
+    };
+    P.timeAt = [=](double s) -> double
+    {
+      return t_start + s * T;
+    };
+    return P;
+  };
+
+  // 遍历两路径的所有时间走廊组合
+  const int Ns_coarse = 12;
+  const int N_lambda_coarse = 6;
+  const int Ns_fine = 48;
+  const int N_lambda_fine = 24;
+  const double eps_dist = 1e-3;
+  const double eps_time = 1e-6;
+
+  for (const auto &c1 : corridors1)
+  {
+    for (const auto &c2 : corridors2)
+    {
+      double T1 = c1.second - c1.first;
+      double T2 = c2.second - c2.first;
+      if (T1 <= eps_time || T2 <= eps_time)
+        continue;
+
+      double alpha = T1 / T2;
+      double theta = (c1.first - c2.first) / T2;
+
+      if (theta < -eps_time || alpha + theta > 1.0 + eps_time)
+        continue; // 不满足时域映射约束
+
+      auto P1 = makePathAdapter(path_new, c1);
+      auto P2 = makePathAdapter(path_exist, c2);
+
+      // ======================================================
+      // Step 6. UTVD 检查函数（coarse + fine）
+      // ======================================================
+      auto checkUTVD = [&](int Ns, int N_lambda) -> bool
+      {
+        for (int i = 0; i < Ns; ++i)
+        {
+          double s = double(i) / (Ns - 1);
+          double s2 = alpha * s + theta;
+          if (s2 < 0.0 - 1e-9 || s2 > 1.0 + 1e-9)
+            return false;
+
+          Eigen::Vector3d p1 = P1.posAt(s);
+          Eigen::Vector3d p2 = P2.posAt(s2);
+          double t1 = P1.timeAt(s);
+          double t2 = P2.timeAt(s2);
+
+          for (int j = 0; j < N_lambda; ++j)
+          {
+            double lambda = double(j) / (N_lambda - 1);
+            Eigen::Vector3d x = (1.0 - lambda) * p1 + lambda * p2;
+            double tau = (1.0 - lambda) * t1 + lambda * t2;
+
+            for (const auto &obs : dyn_obstacles_)
+            {
+              if (obs->isCollidingAtTime(x, tau, eps_dist))
+              {
+                return false; // 任一点与障碍物冲突
+              }
+            }
+          }
+        }
+        return true;
+      };
+
+      bool coarse_pass = checkUTVD(Ns_coarse, N_lambda_coarse);
+      if (!coarse_pass)
+        continue;
+      bool fine_pass = checkUTVD(Ns_fine, N_lambda_fine);
+
+      if (fine_pass)
+      {
+        return true; // 同拓扑
+      }
+    }
+  }
+
+  return false;
+}
+
+// helper: intersect two interval-lists (each sorted, non-overlapping)
+std::vector<std::pair<double,double>> TopologyPRM::intersectIntervals(
+    const std::vector<std::pair<double,double>>& A,
+    const std::vector<std::pair<double,double>>& B)
+{
+  std::vector<std::pair<double,double>> R;
+  size_t ia = 0, ib = 0;
+  while(ia < A.size() && ib < B.size()){
+    double s = std::max(A[ia].first, B[ib].first);
+    double e = std::min(A[ia].second, B[ib].second);
+    if (e >= s) R.emplace_back(s,e);
+    if (A[ia].second < B[ib].second) ++ia; else ++ib;
+  }
+  return R;
 }
 
 int TopologyPRM::shortestPath(vector<vector<Eigen::Vector3d>>& paths) {

@@ -387,7 +387,7 @@ private:
      * @brief 使用UTVD安全间隔构建PRM图连接
      */
     void buildPRMWithUTVDSafety() {
-        tprm_->placeSamples(num_samples_);
+        // tprm_->placeSamples(num_samples_);
         
         auto& graph = tprm_->getTemporalGraph();
         int num_nodes = graph.getNumNodes();
@@ -395,6 +395,7 @@ private:
         ROS_INFO("Building PRM with UTVD safety intervals...");
         
         // 为每个节点计算安全时间间隔
+        auto vertex_start = std::chrono::steady_clock::now();
         std::vector<std::vector<std::pair<double, double>>> node_safety_intervals;
         for (int i = 0; i < num_nodes; ++i) {
             auto node = graph.getNode(i);
@@ -402,8 +403,12 @@ private:
                 node.position, obstacles_, robot_radius_);
             node_safety_intervals.push_back(intervals);
         }
+        auto vertex_end = std::chrono::steady_clock::now();
+        double vertex_ms = std::chrono::duration<double, std::milli>(vertex_end - vertex_start).count();
+        ROS_INFO("Computing vertex safe intervals took %.3f ms", vertex_ms);
         
         // 构建边连接（考虑UTVD安全窗口）
+        auto edge_start = std::chrono::steady_clock::now();
         int edges_added = 0;
         for (int i = 0; i < num_nodes; ++i) {
             for (int j = i + 1; j < num_nodes; ++j) {
@@ -425,7 +430,10 @@ private:
                 }
             }
         }
-        
+        auto edge_end = std::chrono::steady_clock::now();
+        double edge_ms = std::chrono::duration<double, std::milli>(edge_end - edge_start).count();
+        ROS_INFO("Computing edge safe intervals took %.3f ms", edge_ms);
+
         ROS_INFO("UTVD-PRM: Added %d edges with safety validation", edges_added);
     }
 

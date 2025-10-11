@@ -11,3 +11,6 @@ max_sample_num: 2000
 
 # 采样区域膨胀参数 [x, y, z]
 sample_inflate_x: [3.0, 3.0, 1.5]
+
+# 安全裕度 (m) - 用于动态障碍物碰撞检测
+safety_margin: 0.3

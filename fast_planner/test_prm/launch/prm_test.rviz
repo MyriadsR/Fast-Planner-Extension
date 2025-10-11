@@ -7,6 +7,7 @@ Panels:
         - /Global Options1
         - /Status1
         - /Static Obstacles1
+        - /Dynamic Obstacles1
         - /PRM Graph1
         - /PRM Nodes1
       Splitter Ratio: 0.5
@@ -90,6 +91,19 @@ Visualization Manager:
           Value: true
       Enabled: true
       Name: PRM Nodes
+    - Class: rviz/Group
+      Displays:
+        - Class: rviz/MarkerArray
+          Enabled: true
+          Marker Topic: /dyn_obstacles_vis
+          Name: dynamic_obstacles
+          Namespaces:
+            dynamic_obstacles: true
+            velocity_arrows: true
+          Queue Size: 100
+          Value: true
+      Enabled: true
+      Name: Dynamic Obstacles
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

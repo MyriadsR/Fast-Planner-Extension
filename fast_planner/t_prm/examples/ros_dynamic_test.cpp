@@ -131,8 +131,20 @@ public:
         tprm_->getTemporalGraph().clear();
 
         // 重新构建PRM图
+        // 计时 placeSamples
+        auto t_place_start = std::chrono::steady_clock::now();
         tprm_->placeSamples(num_samples_);
+        auto t_place_end = std::chrono::steady_clock::now();
+        double place_ms = std::chrono::duration<double, std::milli>(t_place_end - t_place_start).count();
+        ROS_INFO("placeSamples took %.3f ms", place_ms);
+
+        // 计时 buildPRM
+        auto t_build_start = std::chrono::steady_clock::now();
         tprm_->buildPRM(connection_radius_);
+        auto t_build_end = std::chrono::steady_clock::now();
+        double build_ms = std::chrono::duration<double, std::milli>(t_build_end - t_build_start).count();
+        ROS_INFO("buildPRM took %.3f ms", build_ms);
+        ROS_INFO("Total PRM rebuild time: %.3f ms", place_ms + build_ms);
 
         ROS_INFO("PRM Graph - Nodes: %d, Edges: %d",
                  tprm_->getTemporalGraph().getNumNodes(),

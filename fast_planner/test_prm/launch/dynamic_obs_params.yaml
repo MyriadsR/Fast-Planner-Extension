@@ -1,0 +1,25 @@
+# 动态障碍物参数配置
+
+# 世界坐标系名称
+world_frame: "map"
+
+# 障碍物数量
+obs_num: 30
+
+# 障碍物最大速度 (m/s)
+obs_max_speed: 1.5
+
+# 发布频率 (Hz)
+freq: 30
+
+# 全局边界框最小点 [x, y, z]
+gbbox_min: [-6.0, -12.0, 0.5]
+
+# 全局边界框尺寸 [length_x, length_y, length_z]
+gbbox_size: [12.0, 18.0, 2.0]
+
+# 障碍物最小尺寸 [直径] (m)
+size_min: [0.6, 0.6, 0.6]
+
+# 障碍物最大尺寸 [直径] (m)
+size_max: [1.2, 1.2, 1.2]

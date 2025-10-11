@@ -2,7 +2,7 @@
  * @Author: xzr && 1841953204@qq.com
  * @Date: 2025-10-09 10:44:02
  * @LastEditors: xzr && 1841953204@qq.com
- * @LastEditTime: 2025-10-09 19:44:17
+ * @LastEditTime: 2025-10-11 21:29:57
  * @FilePath: /Fast_Planner_ws/src/Fast-Planner-Extension/fast_planner/path_searching/include/path_searching/topo_prm_dyn.h
  * @Description: 动态拓扑PRM
  * 
@@ -116,12 +116,20 @@ private:
   double robot_speed_;    // 机器人速度
   double line_step_;    // 直线采样步长
 
+  // 节点安全时间区间
+  std::unordered_map<int, std::vector<std::pair<double, double>>> safety_data_;
+  // 边安全时间区间
+  std::vector<std::pair<double, double>> safe_edge_windows_1_;
+  std::vector<std::pair<double, double>> safe_edge_windows_2_;
+  std::vector<std::pair<double, double>> safe_edge_windows_3_;
+  std::vector<std::pair<double, double>> safe_edge_windows_4_;
   /* obstacle data */
   std::vector<std::shared_ptr<tprm::StaticObstacle>> sta_obstacles_;    // 静态障碍物
   std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> dyn_obstacles_;    // 动态障碍物
   double safety_margin_;    // 安全裕度
 
   /* topic */
+  ros::Subscriber static_obs_sub_;
   ros::Subscriber dyn_obs_sub_;
   ros::Subscriber goal_sub_;
 
@@ -186,6 +194,11 @@ private:
   void shortcutPath(vector<Eigen::Vector3d> path, int path_id, int iter_num = 1);
 
   vector<Eigen::Vector3d> discretizePath(const vector<Eigen::Vector3d>& path, int pt_num);
+  bool sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode::Ptr guard2,
+                    const GraphNode::Ptr connector, const Eigen::Vector3d pt);
+  std::vector<std::pair<double,double>> intersectIntervals(
+                    const std::vector<std::pair<double,double>>& A,
+                    const std::vector<std::pair<double,double>>& B);
   bool sameTopoPath(const vector<Eigen::Vector3d>& path1, const vector<Eigen::Vector3d>& path2,
                     double thresh);
   Eigen::Vector3d getOrthoPoint(const vector<Eigen::Vector3d>& path);
@@ -193,9 +206,59 @@ private:
   int shortestPath(vector<vector<Eigen::Vector3d>>& paths);
   
   /* callback function */
+  void staticObsCallback(const obj_msgs::ObjStates::ConstPtr& msg);
   void dynObstaclesCallback(const obj_msgs::ObjStates::ConstPtr& msg);
   void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   
+  /* ---------- manage safety intervals ---------- */
+  void addSafetyInterval(int node_id, double start, double end)
+  {
+    safety_data_[node_id].push_back({start, end});
+  }
+
+  const std::vector<std::pair<double, double>> &getSafetyIntervals(int node_id) const
+  {
+    static const std::vector<std::pair<double, double>> empty;
+    auto it = safety_data_.find(node_id);
+    return it != safety_data_.end() ? it->second : empty;
+  }
+
+  bool isSafeAtTime(int node_id, double time) const
+  {
+    auto it = safety_data_.find(node_id);
+    if (it == safety_data_.end())
+      return false;
+
+    for (const auto &interval : it->second)
+    {
+      if (time >= interval.first && time <= interval.second)
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  std::vector<std::pair<double, double>> computeSafeIntervals(
+      const tprm::Vector3d &position,
+      const std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> &obstacles,
+      double robot_radius = 0.3);
+
+  std::vector<std::pair<double, double>> mergeIntervals(
+      std::vector<std::pair<double, double>> intervals);
+
+  std::vector<std::pair<double, double>> computeEdgeSafeWindow(
+      const tprm::Vector3d &from,
+      const tprm::Vector3d &to,
+      const std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> &obstacles,
+      double robot_speed);
+
+  std::pair<double, double> computeObstacleCollisionWindow(
+      const tprm::Vector3d& from,
+      const tprm::Vector3d& to,
+      const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
+      double robot_speed);
+
 public:
   double clearance_;
 

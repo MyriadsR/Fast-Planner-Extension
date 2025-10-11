@@ -34,3 +34,11 @@ add_executable(test_prm_graph_node
 target_link_libraries(test_prm_graph_node
   ${catkin_LIBRARIES}
 )
+
+add_executable(dynamic_obstacle_publisher
+  src/publish_dynamic_obstacles.cpp
+)
+
+target_link_libraries(dynamic_obstacle_publisher
+  ${catkin_LIBRARIES}
+)
