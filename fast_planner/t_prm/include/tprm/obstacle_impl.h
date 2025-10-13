@@ -80,6 +80,12 @@ public:
      */
     virtual bool isColliding(const Vector3d& segment_from, const Vector3d& segment_to) const override;
 
+    /**
+     * @brief Returns the radius of the obstacle.
+     * @return Radius of the obstacle.
+     */
+    double getRadius() const { return m_radius; }
+
 private:
     double m_radius;  ///< Radius of the sphere.
 };
@@ -115,6 +121,12 @@ public:
      * @return True if the obstacle collides with the position, false otherwise.
      */
     virtual bool isColliding(const Vector3d& point, double& hitFromTime, double& hitToTime) const override;
+
+    /**
+     * @brief Returns the radius of the obstacle.
+     * @return Radius of the obstacle.
+     */
+    double getRadius() const { return m_radius; }
 
 private:
     double m_radius;  ///< Radius of the sphere.

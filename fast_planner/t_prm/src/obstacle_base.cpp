@@ -1,3 +1,13 @@
+/*
+ * @Author: xzr && 1841953204@qq.com
+ * @Date: 2025-10-02 16:38:16
+ * @LastEditors: xzr && 1841953204@qq.com
+ * @LastEditTime: 2025-10-13 17:23:59
+ * @FilePath: /Fast_Planner_ws/src/Fast-Planner-Extension/fast_planner/t_prm/src/obstacle_base.cpp
+ * @Description: 
+ * 
+ * Copyright (c) 2025 by 1841953204@qq.com, All Rights Reserved. 
+ */
 /*********************************************************************
  *
  * Software License Agreement (BSD License)

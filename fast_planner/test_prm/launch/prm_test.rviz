@@ -95,7 +95,7 @@ Visualization Manager:
       Displays:
         - Class: rviz/MarkerArray
           Enabled: true
-          Marker Topic: /dyn_obstacles_vis
+          Marker Topic: /dynamic_obstacles_viz
           Name: dynamic_obstacles
           Namespaces:
             dynamic_obstacles: true

@@ -1,13 +1,11 @@
 /*
- * @Author: Test PRM Graph
- * @Description: Test createGraph function from topo_prm_dyn and visualize in RViz
+ * @Author: Test PRM Dynamic Scene
+ * @Description: 创建简单的动态场景，测试createGraph对动态障碍物和时间同伦拓扑的处理
  */
 
 #include <ros/ros.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
-#include <geometry_msgs/PoseStamped.h>
-#include <obj_state_msgs/ObjectsStates.h>
 #include <tprm/obstacle_impl.h>
 
 #include <iostream>
@@ -17,7 +15,7 @@
 #include <random>
 #include <Eigen/Eigen>
 
-/* ---------- GraphNode definition (从topo_prm_dyn.h复制) ---------- */
+/* ---------- GraphNode definition ---------- */
 class GraphNode {
 public:
   enum NODE_TYPE { Guard = 1, Connector = 2 };
@@ -41,15 +39,13 @@ public:
   typedef std::shared_ptr<GraphNode> Ptr;
 };
 
-/* ---------- PRM测试类 ---------- */
-class PRMTester {
+/* ---------- 动态场景测试类 ---------- */
+class DynamicSceneTester {
 private:
   ros::NodeHandle nh_;
   ros::Publisher graph_vis_pub_;
   ros::Publisher node_vis_pub_;
-  ros::Subscriber static_obs_sub_;
-  ros::Subscriber dyn_obs_sub_;
-  ros::Subscriber goal_sub_;
+  ros::Publisher obs_vis_pub_;
 
   // PRM参数
   std::default_random_engine eng_;
@@ -70,10 +66,11 @@ private:
   double safety_margin_;
   double max_prediction_time_;
 
+  ros::Time start_time_;  // 记录开始时间，用于动态障碍物动画
+
   std::list<GraphNode::Ptr> graph_;
   std::vector<std::shared_ptr<tprm::StaticSphereObstacle>> sta_obstacles_;
   std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> dyn_obstacles_;
-  std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> effective_dyn_obstacles_;  // 用于createGraph的有效障碍物列表
 
   // 存储节点的安全时间区间
   std::map<int, std::vector<std::pair<double, double>>> safety_data_;
@@ -82,29 +79,22 @@ private:
   std::vector<std::pair<double, double>> safe_edge_windows_3_;
   std::vector<std::pair<double, double>> safe_edge_windows_4_;
 
-  bool has_goal_;
-  bool has_obstacles_;
-
 public:
-  PRMTester(ros::NodeHandle& nh) : nh_(nh), has_goal_(false), has_obstacles_(false) {
+  DynamicSceneTester(ros::NodeHandle& nh) : nh_(nh) {
     // 初始化发布器
     graph_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/prm_graph", 10);
     node_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/prm_nodes", 10);
-
-    // 初始化订阅器
-    static_obs_sub_ = nh_.subscribe("/static_obj_states", 10, &PRMTester::staticObsCallback, this);
-    dyn_obs_sub_ = nh_.subscribe("/obj_states", 10, &PRMTester::dynObsCallback, this);
-    goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &PRMTester::goalCallback, this);
+    obs_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/dynamic_obstacles_viz", 10);
 
     // 初始化随机数生成器
     eng_ = std::default_random_engine(rd_());
     rand_pos_ = std::uniform_real_distribution<double>(-1.0, 1.0);
 
     // 读取参数
-    nh_.param("robot_speed", robot_speed_, 0.5);
-    nh_.param("max_sample_time", max_sample_time_, 0.5);
-    nh_.param("max_sample_num", max_sample_num_, 1000);
-    nh_.param("safety_margin", safety_margin_, 0.2);
+    nh_.param("robot_speed", robot_speed_, 1.0);
+    nh_.param("max_sample_time", max_sample_time_, 1.0);
+    nh_.param("max_sample_num", max_sample_num_, 2000);
+    nh_.param("safety_margin", safety_margin_, 0.3);
 
     std::vector<double> inflate;
     nh_.param("sample_inflate_x", inflate, std::vector<double>());
@@ -115,55 +105,207 @@ public:
     }
 
     line_step_ = 0.5 * robot_speed_;
+    max_prediction_time_ = 5.0;
 
-    // 设置起点
-    start_pos_ = Eigen::Vector3d(0.0, 0.0, 1.0);
+    // 设置起点和终点
+    start_pos_ = Eigen::Vector3d(-5.0, 0.0, 1.0);
+    goal_pos_ = Eigen::Vector3d(5.0, 0.0, 1.0);
 
-    ROS_INFO("PRM Tester initialized!");
-    ROS_INFO("Waiting for obstacles and goal...");
-    ROS_INFO("Please click '2D Nav Goal' in RViz to set the goal position");
+    ROS_INFO("Dynamic Scene Tester initialized!");
   }
 
-  void staticObsCallback(const obj_state_msgs::ObjectsStates::ConstPtr& msg) {
-    sta_obstacles_.clear();
+  /**
+   * @brief 创建简单的动态场景
+   * 场景包含：
+   * 1. 两个静态障碍物（作为环境边界）
+   * 2. 两个动态障碍物，在起点和终点之间交叉移动，形成时变拓扑
+   */
+  void createSimpleDynamicScene() {
+    ROS_INFO("\n=== Creating Simple Dynamic Scene ===");
 
-    for (const auto& state : msg->states) {
-      Eigen::Vector3d position(state.position.x, state.position.y, state.position.z);
-      double radius = state.size.x / 2.0;
+    // 场景1：交叉路径的动态障碍物
+    // 障碍物1：Y 轴速度
+    Eigen::Vector3d dyn_pos_1(0.0, 3.0, 1.0);
+    Eigen::Vector3d dyn_vel_1(0.0, -0.8, 0.0);  
+    double dyn_radius_1 = 0.5 + safety_margin_;
 
-      auto obstacle = std::make_shared<tprm::StaticSphereObstacle>(position, radius);
-      sta_obstacles_.push_back(obstacle);
+    auto dyn_obs_1 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_1, dyn_vel_1, dyn_radius_1);
+    dyn_obstacles_.push_back(dyn_obs_1);
+
+    // 障碍物2：Y 轴速度
+    Eigen::Vector3d dyn_pos_2(-2.0, -3.0, 1.0);
+    Eigen::Vector3d dyn_vel_2(0.0, 0.6, 0.0);   
+    double dyn_radius_2 = 0.5 + safety_margin_;
+
+    auto dyn_obs_2 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_2, dyn_vel_2, dyn_radius_2);
+    dyn_obstacles_.push_back(dyn_obs_2);
+
+    // 障碍物3：X 轴速度
+    Eigen::Vector3d dyn_pos_3(-3.0, 1.5, 1.0);
+    Eigen::Vector3d dyn_vel_3(0.5, 0.0, 0.0);
+    double dyn_radius_3 = 0.4 + safety_margin_;
+
+    auto dyn_obs_3 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_3, dyn_vel_3, dyn_radius_3);
+    dyn_obstacles_.push_back(dyn_obs_3);
+
+    // 障碍物4：Y 轴速度
+    Eigen::Vector3d dyn_pos_4(2.0, -3.0, 1.0);
+    Eigen::Vector3d dyn_vel_4(0.0, 0.6, 0.0);   
+    double dyn_radius_4 = 0.5 + safety_margin_;
+
+    auto dyn_obs_4 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_4, dyn_vel_4, dyn_radius_4);
+    dyn_obstacles_.push_back(dyn_obs_4);
+    
+    // // 障碍物5：Z 轴速度
+    // Eigen::Vector3d dyn_pos_5(0.0, 0.0, 1.0);
+    // Eigen::Vector3d dyn_vel_5(0.0, 0.0, 0.6);   
+    // double dyn_radius_5 = 0.5 + safety_margin_;
+
+    // auto dyn_obs_5 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_5, dyn_vel_5, dyn_radius_5);
+    // dyn_obstacles_.push_back(dyn_obs_5);
+
+    // 添加少量静态障碍物（可选）
+    Eigen::Vector3d sta_pos_1(2.0, 2.5, 1.0);
+    auto sta_obs_1 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_1, 0.4);
+    sta_obstacles_.push_back(sta_obs_1);
+
+    Eigen::Vector3d sta_pos_2(-2.0, -2.5, 1.0);
+    auto sta_obs_2 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_2, 0.4);
+    sta_obstacles_.push_back(sta_obs_2);
+
+    Eigen::Vector3d sta_pos_3(0.0, 0.0, 1.0);
+    auto sta_obs_3 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_3, 0.4);
+    sta_obstacles_.push_back(sta_obs_3);
+
+    Eigen::Vector3d sta_pos_4(2.0, 0.0, 1.0);
+    auto sta_obs_4 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_4, 0.4);
+    sta_obstacles_.push_back(sta_obs_4);
+
+    Eigen::Vector3d sta_pos_5(4.0, 0.0, 1.0);
+    auto sta_obs_5 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_5, 0.4);
+    sta_obstacles_.push_back(sta_obs_5);
+
+    // Eigen::Vector3d sta_pos_6(-2.0, 0.0, 1.0);
+    // auto sta_obs_6 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_6, 0.4);
+    // sta_obstacles_.push_back(sta_obs_6);
+
+    ROS_INFO("Created %lu static obstacles", sta_obstacles_.size());
+    ROS_INFO("Created %lu dynamic obstacles", dyn_obstacles_.size());
+
+    // 打印动态障碍物信息
+    for (size_t i = 0; i < dyn_obstacles_.size(); i++) {
+      Eigen::Vector3d pos_t0 = dyn_obstacles_[i]->getCOM(0.0);
+      Eigen::Vector3d vel = dyn_obstacles_[i]->getVelocity();
+      ROS_INFO("  Dyn obs %zu: pos(t=0)=[%.2f, %.2f, %.2f], vel=[%.2f, %.2f, %.2f]",
+               i, pos_t0(0), pos_t0(1), pos_t0(2), vel(0), vel(1), vel(2));
+
+      // 预测未来位置
+      Eigen::Vector3d pos_t5 = dyn_obstacles_[i]->getCOM(5.0);
+      ROS_INFO("           pos(t=5)=[%.2f, %.2f, %.2f]",
+               pos_t5(0), pos_t5(1), pos_t5(2));
     }
 
-    has_obstacles_ = true;
-    ROS_INFO_THROTTLE(5.0, "Received %lu static obstacles", sta_obstacles_.size());
+    ROS_INFO("=== Scene Creation Complete ===\n");
   }
 
-  void dynObsCallback(const obj_state_msgs::ObjectsStates::ConstPtr& msg) {
-    dyn_obstacles_.clear();
+  /**
+   * @brief 可视化动态障碍物轨迹
+   */
+  void visualizeDynamicObstacles() {
+    visualization_msgs::MarkerArray markers;
+    int marker_id = 0;
 
-    for (const auto& state : msg->states) {
-      Eigen::Vector3d position(state.position.x, state.position.y, state.position.z);
-      Eigen::Vector3d velocity(state.velocity.x, state.velocity.y, state.velocity.z);
-      double radius = state.size.x / 2.0 + safety_margin_;
+    // 计算当前时间（相对于开始时间），并让时间循环
+    double current_time = (ros::Time::now() - start_time_).toSec();
+    // 让时间在 0 到 10 秒之间循环，这样障碍物会重复移动
+    current_time = fmod(current_time, 10.0);
 
-      auto obstacle = std::make_shared<tprm::DynamicSphereObstacle>(position, velocity, radius);
-      dyn_obstacles_.push_back(obstacle);
+    // 可视化每个动态障碍物在不同时间的位置
+    for (size_t i = 0; i < dyn_obstacles_.size(); i++) {
+      const auto& obs = dyn_obstacles_[i];
+
+      // 绘制轨迹线（显示从当前时间开始的未来轨迹）
+      visualization_msgs::Marker traj_marker;
+      traj_marker.header.frame_id = "map";
+      traj_marker.header.stamp = ros::Time::now();
+      traj_marker.ns = "dyn_trajectories";
+      traj_marker.id = marker_id++;
+      traj_marker.type = visualization_msgs::Marker::LINE_STRIP;
+      traj_marker.action = visualization_msgs::Marker::ADD;
+      traj_marker.scale.x = 0.05;
+      traj_marker.color.r = 1.0;
+      traj_marker.color.g = 0.5;
+      traj_marker.color.b = 0.0;
+      traj_marker.color.a = 0.8;
+
+      // 采样轨迹点（从当前时间开始）
+      for (double t = current_time; t <= current_time + max_prediction_time_; t += 0.1) {
+        Eigen::Vector3d pos = obs->getCOM(t);
+        geometry_msgs::Point p;
+        p.x = pos(0);
+        p.y = pos(1);
+        p.z = pos(2);
+        traj_marker.points.push_back(p);
+      }
+      markers.markers.push_back(traj_marker);
+
+      // 绘制当前时刻的球体位置（这样球体会移动）
+      visualization_msgs::Marker sphere_marker;
+      sphere_marker.header.frame_id = "map";
+      sphere_marker.header.stamp = ros::Time::now();
+      sphere_marker.ns = "dyn_spheres";
+      sphere_marker.id = marker_id++;
+      sphere_marker.type = visualization_msgs::Marker::SPHERE;
+      sphere_marker.action = visualization_msgs::Marker::ADD;
+
+      // 使用当前时间计算障碍物位置（关键修改！）
+      Eigen::Vector3d pos_current = obs->getCOM(current_time);
+      sphere_marker.pose.position.x = pos_current(0);
+      sphere_marker.pose.position.y = pos_current(1);
+      sphere_marker.pose.position.z = pos_current(2);
+      sphere_marker.pose.orientation.w = 1.0;
+
+      double radius = obs->getRadius();
+      sphere_marker.scale.x = sphere_marker.scale.y = sphere_marker.scale.z = 2.0 * radius;
+      sphere_marker.color.r = 1.0;
+      sphere_marker.color.g = 0.0;
+      sphere_marker.color.b = 0.0;
+      sphere_marker.color.a = 0.5;
+
+      markers.markers.push_back(sphere_marker);
     }
 
-    ROS_INFO_THROTTLE(2.0, "Received %lu dynamic obstacles with safety margin", dyn_obstacles_.size());
-  }
+    // 可视化静态障碍物
+    for (size_t i = 0; i < sta_obstacles_.size(); i++) {
+      visualization_msgs::Marker marker;
+      marker.header.frame_id = "map";
+      marker.header.stamp = ros::Time::now();
+      marker.ns = "static_obs";
+      marker.id = marker_id++;
+      marker.type = visualization_msgs::Marker::SPHERE;
+      marker.action = visualization_msgs::Marker::ADD;
 
-  void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
-    goal_pos_ = Eigen::Vector3d(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
-    ROS_INFO("New goal received: [%.2f, %.2f, %.2f]", goal_pos_[0], goal_pos_[1], goal_pos_[2]);
-    has_goal_ = true;
+      Eigen::Vector3d pos = sta_obstacles_[i]->getCOM();
+      marker.pose.position.x = pos(0);
+      marker.pose.position.y = pos(1);
+      marker.pose.position.z = pos(2);
+      marker.pose.orientation.w = 1.0;
 
-    // 如果有障碍物和目标，就创建图
-    if (has_obstacles_) {
-      createAndVisualizeGraph();
+      double radius = sta_obstacles_[i]->getRadius();
+      marker.scale.x = marker.scale.y = marker.scale.z = 2.0 * radius;
+      marker.color.r = 0.5;
+      marker.color.g = 0.5;
+      marker.color.b = 0.5;
+      marker.color.a = 0.8;
+
+      markers.markers.push_back(marker);
     }
+
+    obs_vis_pub_.publish(markers);
+    ROS_INFO("Dynamic obstacles visualization published!");
   }
+
+  // ========== 以下是从test_prm_graph.cpp复制的辅助函数 ==========
 
   Eigen::Vector3d getSample() {
     Eigen::Vector3d pt;
@@ -286,70 +428,6 @@ public:
     return true;
   }
 
-  bool needConnection(GraphNode::Ptr g1, GraphNode::Ptr g2, Eigen::Vector3d pt) {
-    std::vector<Eigen::Vector3d> path1(3), path2(3);
-    GraphNode::Ptr connector;
-    path1[0] = g1->pos_;
-    path1[1] = pt;
-    path1[2] = g2->pos_;
-
-    path2[0] = g1->pos_;
-    path2[2] = g2->pos_;
-
-    // 调试：统计共同邻居的数量
-    static int need_conn_calls = 0;
-    static int found_common_neighbor = 0;
-    need_conn_calls++;
-
-    for (size_t i = 0; i < g1->neighbors_.size(); ++i) {
-      for (size_t j = 0; j < g2->neighbors_.size(); ++j) {
-        if (g1->neighbors_[i]->id_ == g2->neighbors_[j]->id_) {
-          found_common_neighbor++;
-
-          // // 每100次输出一次统计
-          // if (need_conn_calls % 100 == 0) {
-          //   ROS_INFO("[needConnection] Called %d times, found common neighbor %d times (%.1f%%)",
-          //            need_conn_calls, found_common_neighbor,
-          //            found_common_neighbor / need_conn_calls);
-          // }
-
-          path2[1] = g1->neighbors_[i]->pos_;
-          connector = g1->neighbors_[i];
-          bool same_topo = sameTopoPathUTVD(g1, g2, connector, pt);
-          if (same_topo) {
-            if (pathLength(path1) < pathLength(path2)) {
-              g1->neighbors_[i]->pos_ = pt;
-            }
-            return false;
-          }
-        }
-      }
-    }
-    return true;
-  }
-
-  void pruneGraph() {
-    if (graph_.size() > 2) {
-      for (auto iter1 = graph_.begin(); iter1 != graph_.end() && graph_.size() > 2; ++iter1) {
-        if ((*iter1)->id_ <= 1) continue;
-
-        if ((*iter1)->neighbors_.size() <= 1) {
-          for (auto iter2 = graph_.begin(); iter2 != graph_.end(); ++iter2) {
-            for (auto it_nb = (*iter2)->neighbors_.begin(); it_nb != (*iter2)->neighbors_.end(); ++it_nb) {
-              if ((*it_nb)->id_ == (*iter1)->id_) {
-                (*iter2)->neighbors_.erase(it_nb);
-                break;
-              }
-            }
-          }
-
-          graph_.erase(iter1);
-          iter1 = graph_.begin();
-        }
-      }
-    }
-  }
-
   std::vector<std::pair<double, double>> mergeIntervals(
       std::vector<std::pair<double, double>> intervals) {
     if (intervals.empty())
@@ -458,8 +536,6 @@ public:
     std::vector<std::pair<double, double>> safe_windows;
     std::vector<std::pair<double, double>> collision_windows;
 
-    // ⚠️ 关键修复：限制预测时间范围
-    // 由于DynamicSphereObstacle假设直线运动，我们只预测未来有限时间
     for (const auto& obstacle : obstacles) {
       auto window = computeObstacleCollisionWindow(from, to, obstacle, robot_speed);
       if (window.first < window.second) {
@@ -474,7 +550,6 @@ public:
     collision_windows = mergeIntervals(collision_windows);
 
     if (collision_windows.empty()) {
-      // 未来max_prediction_time内都安全
       safe_windows.emplace_back(0.0, max_prediction_time_);
     } else {
       if (collision_windows[0].first > 0) {
@@ -489,7 +564,6 @@ public:
         }
       }
 
-      // 最后一个碰撞窗口之后到max_prediction_time的时间
       if (collision_windows.back().second < max_prediction_time_) {
         safe_windows.emplace_back(collision_windows.back().second, max_prediction_time_);
       }
@@ -512,27 +586,16 @@ public:
     return R;
   }
 
-  /**
-   * @brief 检查动态障碍物在特定时间是否与给定位置碰撞
-   * @param obstacle 动态障碍物
-   * @param position 空间位置
-   * @param time 检查的时间点
-   * @param eps_dist 距离容差
-   * @return true 如果在该时间点发生碰撞，false 否则
-   */
   bool isObstacleCollidingAtTime(
       const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
       const Eigen::Vector3d& position,
       double time,
       double eps_dist = 1e-3) const {
-    // 获取障碍物与该位置的碰撞时间区间
     double hit_time_from, hit_time_to;
     if (!obstacle->isColliding(position, hit_time_from, hit_time_to)) {
-      // 障碍物永远不会与该位置碰撞
       return false;
     }
 
-    // 检查给定时间是否在碰撞时间区间内（考虑容差）
     return (time >= hit_time_from - eps_dist && time <= hit_time_to + eps_dist);
   }
 
@@ -543,19 +606,12 @@ public:
     std::array<Eigen::Vector3d, 3> path_exist = {guard1->pos_, connector->pos_, guard2->pos_};
 
     // 计算边的安全时间窗口
-    safe_edge_windows_3_ = computeEdgeSafeWindow(guard1->pos_, connector->pos_, effective_dyn_obstacles_, robot_speed_);
-    safe_edge_windows_4_ = computeEdgeSafeWindow(connector->pos_, guard2->pos_, effective_dyn_obstacles_, robot_speed_);
+    safe_edge_windows_3_ = computeEdgeSafeWindow(guard1->pos_, connector->pos_, dyn_obstacles_, robot_speed_);
+    safe_edge_windows_4_ = computeEdgeSafeWindow(connector->pos_, guard2->pos_, dyn_obstacles_, robot_speed_);
 
     // 计算两个边的安全时间窗口的交集
     auto corridors1 = intersectIntervals(safe_edge_windows_1_, safe_edge_windows_2_);
     auto corridors2 = intersectIntervals(safe_edge_windows_3_, safe_edge_windows_4_);
-
-    // // 调试：记录时间走廊信息（每100次输出一次避免刷屏）
-    // static int utvd_call_count = 0;
-    // if (++utvd_call_count % 100 == 0) {
-    //   ROS_INFO("[UTVD Debug #%d] corridors1 size: %lu, corridors2 size: %lu",
-    //            utvd_call_count, corridors1.size(), corridors2.size());
-    // }
 
     // 如果没有重叠，则返回false
     if (corridors1.empty() || corridors2.empty()) return false;
@@ -628,7 +684,7 @@ public:
               Eigen::Vector3d x = (1.0 - lambda) * p1 + lambda * p2;
               double tau = (1.0 - lambda) * t1 + lambda * t2;
 
-              for (const auto &obs : effective_dyn_obstacles_) {
+              for (const auto &obs : dyn_obstacles_) {
                 if (isObstacleCollidingAtTime(obs, x, tau, eps_dist)) {
                   return false;
                 }
@@ -644,14 +700,6 @@ public:
         bool fine_pass = checkUTVD(Ns_fine, N_lambda_fine);
 
         if (fine_pass) {
-          // 调试：记录UTVD成功的情况（前10次）
-          static int utvd_success_count = 0;
-          if (++utvd_success_count <= 10) {
-            ROS_WARN("[UTVD Success #%d] Same topology detected!", utvd_success_count);
-            ROS_WARN("  Corridor1: [%.2f, %.2f], T1=%.2f", c1.first, c1.second, T1);
-            ROS_WARN("  Corridor2: [%.2f, %.2f], T2=%.2f", c2.first, c2.second, T2);
-            ROS_WARN("  Alpha=%.3f, Theta=%.3f", alpha, theta);
-          }
           return true;
         }
       }
@@ -660,44 +708,67 @@ public:
     return false;
   }
 
-  std::list<GraphNode::Ptr> createGraph() {
-    ROS_INFO("\n=== Starting PRM Graph Creation ===");
+  bool needConnection(GraphNode::Ptr g1, GraphNode::Ptr g2, Eigen::Vector3d pt) {
+    std::vector<Eigen::Vector3d> path1(3), path2(3);
+    GraphNode::Ptr connector;
+    path1[0] = g1->pos_;
+    path1[1] = pt;
+    path1[2] = g2->pos_;
 
-    // **测试开关：禁用动态障碍物以进行对比**
-    bool enable_dynamic_obstacles = true;  // 改为false可以禁用动态障碍物
-    nh_.param("enable_dynamic_obstacles", enable_dynamic_obstacles, true);
+    path2[0] = g1->pos_;
+    path2[2] = g2->pos_;
 
-    // **关键修复：检查动态障碍物数据**
-    ROS_INFO("Dynamic obstacles count: %lu", dyn_obstacles_.size());
-    if (dyn_obstacles_.empty() || !enable_dynamic_obstacles) {
-      if (!enable_dynamic_obstacles) {
-        ROS_WARN("⚠️  Dynamic obstacles DISABLED for testing!");
-      } else {
-        ROS_WARN("⚠️  No dynamic obstacles received! Graph will only avoid static obstacles.");
-        ROS_WARN("⚠️  Make sure /obj_states topic is publishing.");
-      }
-    } else {
-      ROS_INFO("✓ Creating graph with %lu dynamic obstacles", dyn_obstacles_.size());
-      // 打印前3个动态障碍物的初始位置（时间t=0）
-      for (size_t i = 0; i < std::min(size_t(3), dyn_obstacles_.size()); i++) {
-        Eigen::Vector3d pos_t0 = dyn_obstacles_[i]->getCOM(0.0);
-        Eigen::Vector3d vel = dyn_obstacles_[i]->getVelocity();
-        ROS_INFO("  Dyn obs %zu: pos(t=0)=[%.2f, %.2f, %.2f], vel=[%.2f, %.2f, %.2f]",
-                 i, pos_t0(0), pos_t0(1), pos_t0(2), vel(0), vel(1), vel(2));
+    for (size_t i = 0; i < g1->neighbors_.size(); ++i) {
+      for (size_t j = 0; j < g2->neighbors_.size(); ++j) {
+        if (g1->neighbors_[i]->id_ == g2->neighbors_[j]->id_) {
+          path2[1] = g1->neighbors_[i]->pos_;
+          connector = g1->neighbors_[i];
+          bool same_topo = sameTopoPathUTVD(g1, g2, connector, pt);
+          if (same_topo) {
+            if (pathLength(path1) < pathLength(path2)) {
+              g1->neighbors_[i]->pos_ = pt;
+            }
+            return false;
+          }
+        }
       }
     }
+    return true;
+  }
 
-    // 如果禁用动态障碍物，清空列表
-    effective_dyn_obstacles_ = enable_dynamic_obstacles ? dyn_obstacles_ :
-                               std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>>();
+  void pruneGraph() {
+    if (graph_.size() > 2) {
+      for (auto iter1 = graph_.begin(); iter1 != graph_.end() && graph_.size() > 2; ++iter1) {
+        if ((*iter1)->id_ <= 1) continue;
+
+        if ((*iter1)->neighbors_.size() <= 1) {
+          for (auto iter2 = graph_.begin(); iter2 != graph_.end(); ++iter2) {
+            for (auto it_nb = (*iter2)->neighbors_.begin(); it_nb != (*iter2)->neighbors_.end(); ++it_nb) {
+              if ((*it_nb)->id_ == (*iter1)->id_) {
+                (*iter2)->neighbors_.erase(it_nb);
+                break;
+              }
+            }
+          }
+
+          graph_.erase(iter1);
+          iter1 = graph_.begin();
+        }
+      }
+    }
+  }
+
+  /**
+   * @brief 创建PRM图，处理动态障碍物和时间同伦拓扑
+   * 这是核心函数，验证动态障碍物的时间窗口计算和UTVD同伦检查
+   */
+  std::list<GraphNode::Ptr> createGraph() {
+    ROS_INFO("\n=== Starting PRM Graph Creation with Dynamic Obstacles ===");
 
     graph_.clear();
 
     // 初始化步长
     line_step_ = 0.5 * robot_speed_;
-
-    // 初始化时间窗口
-    max_prediction_time_ = 5.0;
 
     // 初始化起点和终点节点
     GraphNode::Ptr start_node = GraphNode::Ptr(new GraphNode(start_pos_, GraphNode::Guard, 0));
@@ -727,13 +798,14 @@ public:
     int sample_num = 0;
     double sample_time = 0.0;
 
-    // 统计计数器（用于调试动态障碍物处理）
-    int rejected_by_time_window = 0;  // 被时间窗口拒绝的连接数
-    int rejected_by_topology = 0;      // 被拓扑检查拒绝的连接数
-    int accepted_connections = 0;       // 接受的连接数
+    // 统计计数器
+    int rejected_by_time_window = 0;
+    int rejected_by_topology = 0;
+    int accepted_connections = 0;
 
     ROS_INFO("Sample region: [%.2f, %.2f, %.2f]", sample_r_(0), sample_r_(1), sample_r_(2));
     ROS_INFO("Translation: [%.2f, %.2f, %.2f]", translation_(0), translation_(1), translation_(2));
+    ROS_INFO("Max prediction time: %.2f s", max_prediction_time_);
 
     // 主采样循环
     ros::Time t1, t2;
@@ -765,38 +837,22 @@ public:
         GraphNode::Ptr guard = GraphNode::Ptr(new GraphNode(pt, GraphNode::Guard, ++node_id));
         graph_.push_back(guard);
       } else if (visib_guards.size() == 2) {
-        // 考虑动态障碍物时,需要检查两个Guard和新采样点形成的两条线段的安全区间是否有重叠
-        // 计算2个Guard节点和新采样点的安全时间区间
+        // **关键部分：考虑动态障碍物**
         auto visib_guard_1 = visib_guards[0];
         auto visib_guard_2 = visib_guards[1];
-        auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->pos_, effective_dyn_obstacles_);
-        auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->pos_, effective_dyn_obstacles_);
-        auto safe_intervals_pt = computeSafeIntervals(pt, effective_dyn_obstacles_);
 
-        // 将安全时间区间绑定guard节点
-        safety_data_[visib_guard_1->id_] = safe_intervals_1;
-        safety_data_[visib_guard_2->id_] = safe_intervals_2;
+        // 计算安全时间区间
+        auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->pos_, dyn_obstacles_);
+        auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->pos_, dyn_obstacles_);
+        auto safe_intervals_pt = computeSafeIntervals(pt, dyn_obstacles_);
 
         // 检查边的安全时间窗口
         safe_edge_windows_1_ = computeEdgeSafeWindow(
-            visib_guard_1->pos_, pt, effective_dyn_obstacles_, robot_speed_);
+            visib_guard_1->pos_, pt, dyn_obstacles_, robot_speed_);
         safe_edge_windows_2_ = computeEdgeSafeWindow(
-            pt, visib_guard_2->pos_, effective_dyn_obstacles_, robot_speed_);
+            pt, visib_guard_2->pos_, dyn_obstacles_, robot_speed_);
 
-        // 验证调试：输出前5个边的时间窗口详情
-        static int edge_check_count = 0;
-        if (++edge_check_count <= 5) {
-          ROS_INFO("[Edge Verification #%d] Edge1 windows: %lu, Edge2 windows: %lu",
-                   edge_check_count, safe_edge_windows_1_.size(), safe_edge_windows_2_.size());
-          if (!safe_edge_windows_1_.empty()) {
-            auto& w = safe_edge_windows_1_[0];
-            ROS_INFO("  Edge1 first window: [%.2f, %.2f], duration=%.2f%s",
-                     w.first, w.second, w.second - w.first,
-                     std::isinf(w.second) ? " (INFINITE!)" : "");
-          }
-        }
-
-        // 如果两个边的安全时间窗口没有交集，则继续采样
+        // 检查时间窗口重叠
         auto intervalsOverlap = [](const std::vector<std::pair<double, double>>& a,
                                    const std::vector<std::pair<double, double>>& b,
                                    double eps = 1e-6) -> bool {
@@ -817,14 +873,14 @@ public:
           return false;
         };
 
-        // 如果两个边的安全时间窗口没有交集，则继续采样
+        // 如果没有时间窗口重叠，则拒绝连接
         if (!intervalsOverlap(safe_edge_windows_1_, safe_edge_windows_2_)) {
           rejected_by_time_window++;
           sample_time += (ros::Time::now() - t1).toSec();
           continue;
         }
 
-        // 判断新路径和已有路径是否同拓扑
+        // **关键部分：时间同伦拓扑检查（UTVD）**
         bool need_connect = needConnection(visib_guards[0], visib_guards[1], pt);
         if (!need_connect) {
           rejected_by_topology++;
@@ -847,13 +903,15 @@ public:
       sample_time += (ros::Time::now() - t1).toSec();
     }
 
-    // 输出动态障碍物处理统计
-    ROS_INFO("\n=== Dynamic Obstacle Processing Statistics ===");
+    // 输出统计信息
+    ROS_INFO("\n=== Graph Creation Statistics ===");
+    ROS_INFO("  Total samples: %d", sample_num);
+    ROS_INFO("  Sample time: %.3f s", sample_time);
     ROS_INFO("  Rejected by time window: %d", rejected_by_time_window);
-    ROS_INFO("  Rejected by topology check: %d", rejected_by_topology);
+    ROS_INFO("  Rejected by topology check (UTVD): %d", rejected_by_topology);
     ROS_INFO("  Accepted connections: %d", accepted_connections);
+
     int total_2guard_samples = rejected_by_time_window + rejected_by_topology + accepted_connections;
-    ROS_INFO("  Total 2-guard samples: %d", total_2guard_samples);
     if (total_2guard_samples > 0) {
       ROS_INFO("  Time window rejection rate: %.1f%%",
                100.0 * rejected_by_time_window / total_2guard_samples);
@@ -862,8 +920,6 @@ public:
       ROS_INFO("  Acceptance rate: %.1f%%",
                100.0 * accepted_connections / total_2guard_samples);
     }
-
-    ROS_INFO("Sample num: %d, Sample time: %.3f s", sample_num, sample_time);
 
     // 剪枝
     pruneGraph();
@@ -972,31 +1028,70 @@ public:
     ROS_INFO("Graph visualization published!");
   }
 
-  void createAndVisualizeGraph() {
-    if (!has_obstacles_ || !has_goal_) {
-      ROS_WARN("Missing obstacles or goal, cannot create graph!");
-      return;
-    }
+  void run() {
+    ros::Rate rate(10.0);  // 10 Hz - 更流畅的动画效果
 
-    // 创建图
+    // 初始化开始时间（用于动态障碍物动画）
+    start_time_ = ros::Time::now();
+
+    // 等待订阅者连接
+    ros::Duration(0.5).sleep();
+
+    // 创建场景
+    createSimpleDynamicScene();
+
+    // 可视化障碍物
+    visualizeDynamicObstacles();
+
+    ros::Duration(0.5).sleep();
+
+    // 创建并可视化图
+    ROS_INFO("\nCreating PRM graph...");
+    // 计时：记录 createGraph 开始时间（使用墙钟，不受 /use_sim_time 影响）
+    ros::WallTime _create_start = ros::WallTime::now();
     createGraph();
+    // 计时：计算并打印耗时
+    ros::WallDuration _create_dur = ros::WallTime::now() - _create_start;
+    ROS_WARN("createGraph elapsed: %.6f s (%.3f ms)", _create_dur.toSec(), _create_dur.toSec() * 1000.0);
 
-    // 可视化
     visualizeGraph();
+
+    ROS_INFO("\n=== Test Complete ===");
+    ROS_INFO("Check RViz to see:");
+    ROS_INFO("  - Dynamic obstacle trajectories (orange lines)");
+    ROS_INFO("  - Dynamic obstacles (red spheres)");
+    ROS_INFO("  - Static obstacles (gray spheres)");
+    ROS_INFO("  - PRM graph nodes (blue=guards, green=connectors)");
+    ROS_INFO("  - PRM graph edges (yellow lines)");
+    ROS_INFO("\nThe graph should avoid both static and dynamic obstacles,");
+    ROS_INFO("and demonstrate time-homotopic topology classes.\n");
+
+    // 保持运行以持续发布可视化
+    while (ros::ok()) {
+      visualizeDynamicObstacles();
+      visualizeGraph();
+      ros::spinOnce();
+      rate.sleep();
+    }
   }
 };
 
 int main(int argc, char** argv) {
-  ros::init(argc, argv, "test_prm_graph");
+  ros::init(argc, argv, "test_prm_dynamic_simple");
   ros::NodeHandle nh("~");
 
-  PRMTester tester(nh);
+  DynamicSceneTester tester(nh);
 
-  ROS_INFO("PRM Graph Tester is running...");
-  ROS_INFO("1. Make sure static obstacles are published to /static_obj_states");
-  ROS_INFO("2. Click '2D Nav Goal' in RViz to set goal and trigger graph creation");
+  ROS_INFO("=================================================");
+  ROS_INFO("  PRM Dynamic Scene Tester");
+  ROS_INFO("=================================================");
+  ROS_INFO("This test creates a simple dynamic scene with:");
+  ROS_INFO("  - Moving obstacles that create time-varying topology");
+  ROS_INFO("  - Static obstacles");
+  ROS_INFO("  - PRM graph creation with UTVD homotopy checking");
+  ROS_INFO("=================================================\n");
 
-  ros::spin();
+  tester.run();
 
   return 0;
 }

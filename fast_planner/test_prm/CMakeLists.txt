@@ -42,3 +42,11 @@ add_executable(dynamic_obstacle_publisher
 target_link_libraries(dynamic_obstacle_publisher
   ${catkin_LIBRARIES}
 )
+
+add_executable(test_prm_dynamic_simple_node
+  src/test_prm_dynamic_simple.cpp
+)
+
+target_link_libraries(test_prm_dynamic_simple_node
+  ${catkin_LIBRARIES}
+)
