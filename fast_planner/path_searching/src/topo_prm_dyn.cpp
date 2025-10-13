@@ -93,12 +93,42 @@ void TopologyPRM::findTopoPaths(
 
 list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vector3d end)
 {
-  // std::cout << "[Topo]: searching----------------------" << std::endl;
+  ROS_INFO("\n=== Starting PRM Graph Creation ===");
+
+  // **测试开关：禁用动态障碍物以进行对比**
+  bool enable_dynamic_obstacles = true;  // 改为false可以禁用动态障碍物
+  nh_.param("enable_dynamic_obstacles", enable_dynamic_obstacles, true);
+
+  // **关键修复：检查动态障碍物数据**
+  ROS_INFO("Dynamic obstacles count: %lu", dyn_obstacles_.size());
+  if (dyn_obstacles_.empty() || !enable_dynamic_obstacles) {
+    if (!enable_dynamic_obstacles) {
+      ROS_WARN("⚠️  Dynamic obstacles DISABLED for testing!");
+    } else {
+      ROS_WARN("⚠️  No dynamic obstacles received! Graph will only avoid static obstacles.");
+      ROS_WARN("⚠️  Make sure /obj_states topic is publishing.");
+    }
+  } else {
+    ROS_INFO("✓ Creating graph with %lu dynamic obstacles", dyn_obstacles_.size());
+    // 打印前3个动态障碍物的初始位置（时间t=0）
+    for (size_t i = 0; i < std::min(size_t(3), dyn_obstacles_.size()); i++) {
+      Eigen::Vector3d pos_t0 = dyn_obstacles_[i]->getCOM(0.0);
+      Eigen::Vector3d vel = dyn_obstacles_[i]->getVelocity();
+      ROS_INFO("  Dyn obs %zu: pos(t=0)=[%.2f, %.2f, %.2f], vel=[%.2f, %.2f, %.2f]",
+               i, pos_t0(0), pos_t0(1), pos_t0(2), vel(0), vel(1), vel(2));
+    }
+  }
+
+  // 如果禁用动态障碍物，清空列表
+  effective_dyn_obstacles_ = enable_dynamic_obstacles ? dyn_obstacles_ :
+                             std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>>();
 
   /* init the start, end and sample region */
   graph_.clear();
   line_step_ = 0.5 * robot_speed_; // 初始步长为机器人速度的一半
-  // collis_.clear();
+
+  // 初始化时间窗口
+  max_prediction_time_ = 5.0;
 
   GraphNode::Ptr start_node = GraphNode::Ptr(new GraphNode(start, GraphNode::Guard, 0));
   GraphNode::Ptr end_node = GraphNode::Ptr(new GraphNode(end, GraphNode::Guard, 1));
@@ -128,6 +158,15 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
   /* ---------- main loop ---------- */
   int sample_num = 0;
   double sample_time = 0.0;
+
+  // 统计计数器（用于调试动态障碍物处理）
+  int rejected_by_time_window = 0;  // 被时间窗口拒绝的连接数
+  int rejected_by_topology = 0;      // 被拓扑检查拒绝的连接数
+  int accepted_connections = 0;       // 接受的连接数
+
+  ROS_INFO("Sample region: [%.2f, %.2f, %.2f]", sample_r_(0), sample_r_(1), sample_r_(2));
+  ROS_INFO("Translation: [%.2f, %.2f, %.2f]", translation_(0), translation_(1), translation_(2));
+
   Eigen::Vector3d pt;
   ros::Time t1, t2;
   while (sample_time < max_sample_time_ && sample_num < max_sample_num_)
@@ -136,14 +175,6 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
 
     pt = getSample();
     ++sample_num;
-    // double dist;
-    // // edt_environment_->evaluateEDTWithGrad(pt, -1.0, dist, grad);
-    // dist = edt_environment_->evaluateCoarseEDT(pt, -1.0);
-
-    // 订阅障碍物状态
-    static_obs_sub_ = nh_.subscribe("/static_obj_states", 10, &TopologyPRM::staticObsCallback, this);
-    dyn_obs_sub_ = nh_.subscribe("/obj_states", 10, &TopologyPRM::dynObstaclesCallback, this);
-    goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &TopologyPRM::goalCallback, this);
 
     // 检查采样点是否与在静态障碍物中
     bool is_blocked = false;
@@ -173,16 +204,13 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
     else if (visib_guards.size() == 2)
     {
       /* try adding new connection between two guard */
-      // vector<pair<GraphNode::Ptr, GraphNode::Ptr>> sort_guards =
-      // sortVisibGuard(visib_guards);
-
       // 考虑动态障碍物时，需要检查两个Guard和新采样点形成的两条线段的安全区间是否有重叠
       // 计算2个Guard节点和新采样点的安全时间区间
       auto visib_guard_1 = visib_guards[0];
       auto visib_guard_2 = visib_guards[1];
-      auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->position, dyn_obstacles_);
-      auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->position, dyn_obstacles_);
-      auto safe_intervals_pt = computeSafeIntervals(pt, dyn_obstacles_);
+      auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->pos_, effective_dyn_obstacles_);
+      auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->pos_, effective_dyn_obstacles_);
+      auto safe_intervals_pt = computeSafeIntervals(pt, effective_dyn_obstacles_);
 
       // 将安全时间区间绑定guard节点
       safety_data_[visib_guard_1->id_] = safe_intervals_1;
@@ -190,30 +218,39 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
 
       // 检查边的安全时间窗口
       safe_edge_windows_1_ = computeEdgeSafeWindow(
-          visib_guard_1->position, pt, dyn_obstacles_, robot_speed_);
+          visib_guard_1->pos_, pt, effective_dyn_obstacles_, robot_speed_);
       safe_edge_windows_2_ = computeEdgeSafeWindow(
-          pt, visib_guard_2->position, dyn_obstacles_, robot_speed_);
-      
+          pt, visib_guard_2->pos_, effective_dyn_obstacles_, robot_speed_);
+
+      // 验证调试：输出前5个边的时间窗口详情
+      static int edge_check_count = 0;
+      if (++edge_check_count <= 5) {
+        ROS_INFO("[Edge Verification #%d] Edge1 windows: %lu, Edge2 windows: %lu",
+                 edge_check_count, safe_edge_windows_1_.size(), safe_edge_windows_2_.size());
+        if (!safe_edge_windows_1_.empty()) {
+          auto& w = safe_edge_windows_1_[0];
+          ROS_INFO("  Edge1 first window: [%.2f, %.2f], duration=%.2f%s",
+                   w.first, w.second, w.second - w.first,
+                   std::isinf(w.second) ? " (INFINITE!)" : "");
+        }
+      }
+
       // 如果两个边的安全时间窗口没有交集，则继续采样
       auto intervalsOverlap = [](const std::vector<std::pair<double, double>> &a,
                                  const std::vector<std::pair<double, double>> &b,
                                  double eps = 1e-6) -> bool {
         if (a.empty() || b.empty()) return false;
         size_t ia = 0, ib = 0;
-        // assume intervals are sorted and non-overlapping within each vector (mergeIntervals used earlier)
         while (ia < a.size() && ib < b.size()) {
           double a_start = a[ia].first, a_end = a[ia].second;
           double b_start = b[ib].first, b_end = b[ib].second;
 
-          // consider overlap when (a_start <= b_end) && (b_start <= a_end)
           if (a_start <= b_end + eps && b_start <= a_end + eps) {
-            // also ensure the overlap has positive duration (or within eps)
             double overlap_start = std::max(a_start, b_start);
             double overlap_end = std::min(a_end, b_end);
             if (overlap_end + eps >= overlap_start) return true;
           }
 
-          // advance the interval with the smaller end
           if (a_end < b_end) ++ia; else ++ib;
         }
         return false;
@@ -221,41 +258,62 @@ list<GraphNode::Ptr> TopologyPRM::createGraph(Eigen::Vector3d start, Eigen::Vect
 
       // 如果两个边的安全时间窗口没有交集，则继续采样
       if (!intervalsOverlap(safe_edge_windows_1_, safe_edge_windows_2_)) {
+        rejected_by_time_window++;
         sample_time += (ros::Time::now() - t1).toSec();
         continue;
       }
+
+      // 判断新路径和已有路径是否同拓扑
+      bool need_connect = needConnection(visib_guards[0], visib_guards[1], pt);
+      if (!need_connect)
+      {
+        rejected_by_topology++;
+        sample_time += (ros::Time::now() - t1).toSec();
+        continue;
+      }
+      // new useful connection needed, add new connector
+      GraphNode::Ptr connector = GraphNode::Ptr(new GraphNode(pt, GraphNode::Connector, ++node_id));
+      graph_.push_back(connector);
+      accepted_connections++;
+
+      // connect guards
+      visib_guards[0]->neighbors_.push_back(connector);
+      visib_guards[1]->neighbors_.push_back(connector);
+
+      connector->neighbors_.push_back(visib_guards[0]);
+      connector->neighbors_.push_back(visib_guards[1]);
     }
 
-    // 判断新路径和已有路径是否同拓扑
-    bool need_connect = needConnection(visib_guards[0], visib_guards[1], pt);
-    if (!need_connect)
-    {
-      sample_time += (ros::Time::now() - t1).toSec();
-      continue;
-    }
-    // new useful connection needed, add new connector
-    GraphNode::Ptr connector = GraphNode::Ptr(new GraphNode(pt, GraphNode::Connector, ++node_id));
-    graph_.push_back(connector);
-
-    // connect guards
-    visib_guards[0]->neighbors_.push_back(connector);
-    visib_guards[1]->neighbors_.push_back(connector);
-
-    connector->neighbors_.push_back(visib_guards[0]);
-    connector->neighbors_.push_back(visib_guards[1]);
+    sample_time += (ros::Time::now() - t1).toSec();
   }
 
-  sample_time += (ros::Time::now() - t1).toSec();
-}
+  // 输出动态障碍物处理统计
+  ROS_INFO("\n=== Dynamic Obstacle Processing Statistics ===");
+  ROS_INFO("  Rejected by time window: %d", rejected_by_time_window);
+  ROS_INFO("  Rejected by topology check: %d", rejected_by_topology);
+  ROS_INFO("  Accepted connections: %d", accepted_connections);
+  int total_2guard_samples = rejected_by_time_window + rejected_by_topology + accepted_connections;
+  ROS_INFO("  Total 2-guard samples: %d", total_2guard_samples);
+  if (total_2guard_samples > 0) {
+    ROS_INFO("  Time window rejection rate: %.1f%%",
+             100.0 * rejected_by_time_window / total_2guard_samples);
+    ROS_INFO("  Topology rejection rate: %.1f%%",
+             100.0 * rejected_by_topology / total_2guard_samples);
+    ROS_INFO("  Acceptance rate: %.1f%%",
+             100.0 * accepted_connections / total_2guard_samples);
+  }
 
-/* print record */
-std::cout << "[Topo]: sample num: " << sample_num;
+  ROS_INFO("Sample num: %d, Sample time: %.3f s", sample_num, sample_time);
 
-pruneGraph();
-// std::cout << "[Topo]: node num: " << graph_.size() << std::endl;
+  /* print record */
+  std::cout << "[Topo]: sample num: " << sample_num;
 
-return graph_;
-// return searchPaths(start_node, end_node);
+  pruneGraph();
+
+  ROS_INFO("Final graph nodes: %lu", graph_.size());
+  ROS_INFO("=== Graph Creation Complete ===\n");
+
+  return graph_;
 }
 
 void TopologyPRM::staticObsCallback(const obj_state_msgs::ObjectsStates::ConstPtr &msg)
@@ -497,9 +555,8 @@ void TopologyPRM::pruneGraph() {
 std::vector<std::pair<double, double>> TopologyPRM::computeSafeIntervals(
     const tprm::Vector3d &position,
     const std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> &obstacles,
-    double robot_radius = 0.3)
+    double robot_radius)
 {
-
   std::vector<std::pair<double, double>> safe_intervals;
   std::vector<std::pair<double, double>> collision_intervals;
 
@@ -509,7 +566,11 @@ std::vector<std::pair<double, double>> TopologyPRM::computeSafeIntervals(
     double hit_time_from, hit_time_to;
     if (obstacle->isColliding(position, hit_time_from, hit_time_to))
     {
-      collision_intervals.emplace_back(hit_time_from, hit_time_to);
+      // ⚠️ 关键修复：只考虑max_prediction_time_内的碰撞
+      if (hit_time_from < max_prediction_time_) {
+        hit_time_to = std::min(hit_time_to, max_prediction_time_);
+        collision_intervals.emplace_back(hit_time_from, hit_time_to);
+      }
     }
   }
 
@@ -519,8 +580,8 @@ std::vector<std::pair<double, double>> TopologyPRM::computeSafeIntervals(
   // 从碰撞间隔推导安全间隔
   if (collision_intervals.empty())
   {
-    // 如果没有碰撞，整个时间域都是安全的
-    safe_intervals.emplace_back(0.0, std::numeric_limits<double>::infinity());
+    // 如果没有碰撞，未来max_prediction_time_内都安全
+    safe_intervals.emplace_back(0.0, max_prediction_time_);
   }
   else
   {
@@ -541,12 +602,10 @@ std::vector<std::pair<double, double>> TopologyPRM::computeSafeIntervals(
       }
     }
 
-    // 最后一个安全间隔：从最后一个碰撞结束到无穷大
-    if (!collision_intervals.empty() &&
-        collision_intervals.back().second < std::numeric_limits<double>::infinity())
+    // 最后一个碰撞之后到max_prediction_time_的时间
+    if (collision_intervals.back().second < max_prediction_time_)
     {
-      safe_intervals.emplace_back(collision_intervals.back().second,
-                                  std::numeric_limits<double>::infinity());
+      safe_intervals.emplace_back(collision_intervals.back().second, max_prediction_time_);
     }
   }
 
@@ -585,20 +644,24 @@ std::vector<std::pair<double, double>> TopologyPRM::computeEdgeSafeWindow(
     const std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> &obstacles,
     double robot_speed)
 {
-
   double distance = (to - from).norm();
   double travel_time = distance / robot_speed;
 
   std::vector<std::pair<double, double>> safe_windows;
   std::vector<std::pair<double, double>> collision_windows;
 
-  // 对每个障碍物计算碰撞时间窗口
+  // ⚠️ 关键修复：限制预测时间范围
+  // 由于DynamicSphereObstacle假设直线运动，我们只预测未来有限时间
   for (const auto &obstacle : obstacles)
   {
     auto window = computeObstacleCollisionWindow(from, to, obstacle, robot_speed);
     if (window.first < window.second)
     {
-      collision_windows.push_back(window);
+      // 限制碰撞窗口的结束时间
+      if (window.first < max_prediction_time_) {
+        window.second = std::min(window.second, max_prediction_time_);
+        collision_windows.push_back(window);
+      }
     }
   }
 
@@ -608,7 +671,8 @@ std::vector<std::pair<double, double>> TopologyPRM::computeEdgeSafeWindow(
   // 推导安全窗口（与安全间隔计算类似）
   if (collision_windows.empty())
   {
-    safe_windows.emplace_back(0.0, std::numeric_limits<double>::infinity());
+    // 未来max_prediction_time_内都安全
+    safe_windows.emplace_back(0.0, max_prediction_time_);
   }
   else
   {
@@ -627,10 +691,10 @@ std::vector<std::pair<double, double>> TopologyPRM::computeEdgeSafeWindow(
       }
     }
 
-    if (collision_windows.back().second < std::numeric_limits<double>::infinity())
+    // 最后一个碰撞窗口之后到max_prediction_time_的时间
+    if (collision_windows.back().second < max_prediction_time_)
     {
-      safe_windows.emplace_back(collision_windows.back().second,
-                                std::numeric_limits<double>::infinity());
+      safe_windows.emplace_back(collision_windows.back().second, max_prediction_time_);
     }
   }
 
@@ -797,11 +861,11 @@ bool TopologyPRM::sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode:
   // 构造路径
   std::array<Eigen::Vector3d, 3> path_new = {guard1->pos_, pt, guard2->pos_};
   std::array<Eigen::Vector3d, 3> path_exist = {guard1->pos_, connector->pos_, guard2->pos_};
-  
+
   // 计算边的安全时间窗口
-  safe_edge_windows_3_ = computeEdgeSafeWindow(guard1->pos_, connector->pos_, dyn_obstacles_, robot_speed_);
-  safe_edge_windows_4_ = computeEdgeSafeWindow(connector->pos_, guard2->pos_, dyn_obstacles_, robot_speed_);
-  
+  safe_edge_windows_3_ = computeEdgeSafeWindow(guard1->pos_, connector->pos_, effective_dyn_obstacles_, robot_speed_);
+  safe_edge_windows_4_ = computeEdgeSafeWindow(connector->pos_, guard2->pos_, effective_dyn_obstacles_, robot_speed_);
+
   // 计算两个边的安全时间窗口的交集
   auto corridors1 = intersectIntervals(safe_edge_windows_1_, safe_edge_windows_2_);
   auto corridors2 = intersectIntervals(safe_edge_windows_3_, safe_edge_windows_4_);
@@ -893,9 +957,9 @@ bool TopologyPRM::sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode:
             Eigen::Vector3d x = (1.0 - lambda) * p1 + lambda * p2;
             double tau = (1.0 - lambda) * t1 + lambda * t2;
 
-            for (const auto &obs : dyn_obstacles_)
+            for (const auto &obs : effective_dyn_obstacles_)
             {
-              if (obs->isCollidingAtTime(x, tau, eps_dist))
+              if (isObstacleCollidingAtTime(obs, x, tau, eps_dist))
               {
                 return false; // 任一点与障碍物冲突
               }
@@ -918,6 +982,30 @@ bool TopologyPRM::sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode:
   }
 
   return false;
+}
+
+/**
+ * @brief 检查动态障碍物在特定时间是否与给定位置碰撞
+ * @param obstacle 动态障碍物
+ * @param position 空间位置
+ * @param time 检查的时间点
+ * @param eps_dist 距离容差
+ * @return true 如果在该时间点发生碰撞，false 否则
+ */
+bool TopologyPRM::isObstacleCollidingAtTime(
+    const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
+    const Eigen::Vector3d& position,
+    double time,
+    double eps_dist) const {
+  // 获取障碍物与该位置的碰撞时间区间
+  double hit_time_from, hit_time_to;
+  if (!obstacle->isColliding(position, hit_time_from, hit_time_to)) {
+    // 障碍物永远不会与该位置碰撞
+    return false;
+  }
+
+  // 检查给定时间是否在碰撞时间区间内（考虑容差）
+  return (time >= hit_time_from - eps_dist && time <= hit_time_to + eps_dist);
 }
 
 // helper: intersect two interval-lists (each sorted, non-overlapping)

@@ -68,6 +68,7 @@ private:
   double max_sample_time_;
   int max_sample_num_;
   double safety_margin_;
+  double max_prediction_time_;
 
   std::list<GraphNode::Ptr> graph_;
   std::vector<std::shared_ptr<tprm::StaticSphereObstacle>> sta_obstacles_;
@@ -305,12 +306,12 @@ public:
         if (g1->neighbors_[i]->id_ == g2->neighbors_[j]->id_) {
           found_common_neighbor++;
 
-          // 每100次输出一次统计
-          if (need_conn_calls % 100 == 0) {
-            ROS_INFO("[needConnection] Called %d times, found common neighbor %d times (%.1f%%)",
-                     need_conn_calls, found_common_neighbor,
-                     100.0 * found_common_neighbor / need_conn_calls);
-          }
+          // // 每100次输出一次统计
+          // if (need_conn_calls % 100 == 0) {
+          //   ROS_INFO("[needConnection] Called %d times, found common neighbor %d times (%.1f%%)",
+          //            need_conn_calls, found_common_neighbor,
+          //            found_common_neighbor / need_conn_calls);
+          // }
 
           path2[1] = g1->neighbors_[i]->pos_;
           connector = g1->neighbors_[i];
@@ -376,16 +377,13 @@ public:
     std::vector<std::pair<double, double>> safe_intervals;
     std::vector<std::pair<double, double>> collision_intervals;
 
-    // ⚠️ 限制预测时间
-    const double max_prediction_time = 10.0;
-
     // 收集所有障碍物的碰撞时间间隔
     for (const auto& obstacle : obstacles) {
       double hit_time_from, hit_time_to;
       if (obstacle->isColliding(position, hit_time_from, hit_time_to)) {
         // 只考虑max_prediction_time内的碰撞
-        if (hit_time_from < max_prediction_time) {
-          hit_time_to = std::min(hit_time_to, max_prediction_time);
+        if (hit_time_from < max_prediction_time_) {
+          hit_time_to = std::min(hit_time_to, max_prediction_time_);
           collision_intervals.emplace_back(hit_time_from, hit_time_to);
         }
       }
@@ -396,7 +394,7 @@ public:
 
     // 从碰撞间隔推导安全间隔
     if (collision_intervals.empty()) {
-      safe_intervals.emplace_back(0.0, max_prediction_time);
+      safe_intervals.emplace_back(0.0, max_prediction_time_);
     } else {
       if (collision_intervals[0].first > 0) {
         safe_intervals.emplace_back(0.0, collision_intervals[0].first);
@@ -410,8 +408,8 @@ public:
         }
       }
 
-      if (collision_intervals.back().second < max_prediction_time) {
-        safe_intervals.emplace_back(collision_intervals.back().second, max_prediction_time);
+      if (collision_intervals.back().second < max_prediction_time_) {
+        safe_intervals.emplace_back(collision_intervals.back().second, max_prediction_time_);
       }
     }
 
@@ -462,14 +460,12 @@ public:
 
     // ⚠️ 关键修复：限制预测时间范围
     // 由于DynamicSphereObstacle假设直线运动，我们只预测未来有限时间
-    const double max_prediction_time = 5.0;  // 从10秒减少到5秒
-
     for (const auto& obstacle : obstacles) {
       auto window = computeObstacleCollisionWindow(from, to, obstacle, robot_speed);
       if (window.first < window.second) {
         // 限制碰撞窗口的结束时间
-        if (window.first < max_prediction_time) {
-          window.second = std::min(window.second, max_prediction_time);
+        if (window.first < max_prediction_time_) {
+          window.second = std::min(window.second, max_prediction_time_);
           collision_windows.push_back(window);
         }
       }
@@ -479,7 +475,7 @@ public:
 
     if (collision_windows.empty()) {
       // 未来max_prediction_time内都安全
-      safe_windows.emplace_back(0.0, max_prediction_time);
+      safe_windows.emplace_back(0.0, max_prediction_time_);
     } else {
       if (collision_windows[0].first > 0) {
         safe_windows.emplace_back(0.0, collision_windows[0].first);
@@ -494,8 +490,8 @@ public:
       }
 
       // 最后一个碰撞窗口之后到max_prediction_time的时间
-      if (collision_windows.back().second < max_prediction_time) {
-        safe_windows.emplace_back(collision_windows.back().second, max_prediction_time);
+      if (collision_windows.back().second < max_prediction_time_) {
+        safe_windows.emplace_back(collision_windows.back().second, max_prediction_time_);
       }
     }
 
@@ -554,12 +550,12 @@ public:
     auto corridors1 = intersectIntervals(safe_edge_windows_1_, safe_edge_windows_2_);
     auto corridors2 = intersectIntervals(safe_edge_windows_3_, safe_edge_windows_4_);
 
-    // 调试：记录时间走廊信息（每100次输出一次避免刷屏）
-    static int utvd_call_count = 0;
-    if (++utvd_call_count % 100 == 0) {
-      ROS_INFO("[UTVD Debug #%d] corridors1 size: %lu, corridors2 size: %lu",
-               utvd_call_count, corridors1.size(), corridors2.size());
-    }
+    // // 调试：记录时间走廊信息（每100次输出一次避免刷屏）
+    // static int utvd_call_count = 0;
+    // if (++utvd_call_count % 100 == 0) {
+    //   ROS_INFO("[UTVD Debug #%d] corridors1 size: %lu, corridors2 size: %lu",
+    //            utvd_call_count, corridors1.size(), corridors2.size());
+    // }
 
     // 如果没有重叠，则返回false
     if (corridors1.empty() || corridors2.empty()) return false;
@@ -699,6 +695,9 @@ public:
 
     // 初始化步长
     line_step_ = 0.5 * robot_speed_;
+
+    // 初始化时间窗口
+    max_prediction_time_ = 5.0;
 
     // 初始化起点和终点节点
     GraphNode::Ptr start_node = GraphNode::Ptr(new GraphNode(start_pos_, GraphNode::Guard, 0));

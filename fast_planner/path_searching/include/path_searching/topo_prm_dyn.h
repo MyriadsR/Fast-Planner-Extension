@@ -111,10 +111,12 @@ public:
 class TopologyPRM {
 private:
   /* basic data */
+  ros::NodeHandle nh_;
   Eigen::Vector3d start_pos_;
   Eigen::Vector3d goal_pos_;
   double robot_speed_;    // 机器人速度
   double line_step_;    // 直线采样步长
+  double max_prediction_time_;  // 最大预测时间
 
   // 节点安全时间区间
   std::unordered_map<int, std::vector<std::pair<double, double>>> safety_data_;
@@ -124,9 +126,11 @@ private:
   std::vector<std::pair<double, double>> safe_edge_windows_3_;
   std::vector<std::pair<double, double>> safe_edge_windows_4_;
   /* obstacle data */
-  std::vector<std::shared_ptr<tprm::StaticObstacle>> sta_obstacles_;    // 静态障碍物
+  std::vector<std::shared_ptr<tprm::StaticSphereObstacle>> sta_obstacles_;    // 静态障碍物
   std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> dyn_obstacles_;    // 动态障碍物
+  std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> effective_dyn_obstacles_;  // 有效的动态障碍物列表
   double safety_margin_;    // 安全裕度
+  bool has_obstacles_;      // 是否已接收到障碍物数据
 
   /* topic */
   ros::Subscriber static_obs_sub_;
@@ -182,6 +186,8 @@ private:
                                             // connection between two guard
   bool lineVisib(const Eigen::Vector3d& p1, const Eigen::Vector3d& p2, double thresh,
                  Eigen::Vector3d& pc, int caster_id = 0);
+  bool lineVisibStatic(const Eigen::Vector3d& p1, const Eigen::Vector3d& p2, double base_step,
+                       Eigen::Vector3d& pc);
   bool triangleVisib(Eigen::Vector3d pt, Eigen::Vector3d p1, Eigen::Vector3d p2);
   void pruneGraph();
 
@@ -204,10 +210,17 @@ private:
   Eigen::Vector3d getOrthoPoint(const vector<Eigen::Vector3d>& path);
 
   int shortestPath(vector<vector<Eigen::Vector3d>>& paths);
-  
+
+  /* collision checking */
+  bool isObstacleCollidingAtTime(
+      const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
+      const Eigen::Vector3d& position,
+      double time,
+      double eps_dist = 1e-3) const;
+
   /* callback function */
-  void staticObsCallback(const obj_msgs::ObjStates::ConstPtr& msg);
-  void dynObstaclesCallback(const obj_msgs::ObjStates::ConstPtr& msg);
+  void staticObsCallback(const obj_state_msgs::ObjectsStates::ConstPtr& msg);
+  void dynObstaclesCallback(const obj_state_msgs::ObjectsStates::ConstPtr& msg);
   void goalCallback(const geometry_msgs::PoseStamped::ConstPtr& msg);
   
   /* ---------- manage safety intervals ---------- */

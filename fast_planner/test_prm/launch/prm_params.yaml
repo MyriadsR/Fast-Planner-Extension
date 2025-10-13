@@ -1,7 +1,7 @@
 # PRM测试参数配置
 
 # 机器人速度 (m/s)
-robot_speed: 1.0
+robot_speed: 0.3
 
 # 最大采样时间 (秒)
 max_sample_time: 1.0
