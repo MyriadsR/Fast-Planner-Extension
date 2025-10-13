@@ -7,7 +7,7 @@ robot_speed: 0.3
 max_sample_time: 1.0
 
 # 最大采样数量
-max_sample_num: 2000
+max_sample_num: 500
 
 # 采样区域膨胀参数 [x, y, z]
 sample_inflate_x: [3.0, 3.0, 1.5]

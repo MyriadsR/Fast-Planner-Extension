@@ -34,8 +34,6 @@ private:
 
   // 障碍物状态
   vecVec3 pos_list_, vel_list_, size_list_;
-  vecVec3 center_list_;  // 每个障碍物的运动中心点
-  vector<double> range_list_;  // 每个障碍物的运动半径
   ros::Time last_t_;
 
 public:
@@ -70,20 +68,14 @@ public:
     srand((unsigned)time(NULL));
 
     for (int i = 0; i < obs_num_; i++) {
-      Vector3d pos, vel, size, center;
+      Vector3d pos, vel, size;
 
-      // 随机生成运动中心位置
-      center(0) = gbbox_o_[0] + (rand() % 1000) / 1000.0 * gbbox_l_[0];
-      center(1) = gbbox_o_[1] + (rand() % 1000) / 1000.0 * gbbox_l_[1];
-      center(2) = gbbox_o_[2] + (rand() % 1000) / 1000.0 * gbbox_l_[2];
-
-      // 随机生成往返运动的半径（1-3米）
-      double range = 1.0 + (rand() % 1000) / 1000.0 * 2.0;
-
-      // 初始位置在中心点附近随机偏移
-      pos(0) = center(0) + ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * range * 0.5;
-      pos(1) = center(1) + ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * range * 0.5;
-      pos(2) = center(2) + ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * range * 0.5;
+      // 随机生成初始位置（在地图边界内）
+      // 添加一些边距避免初始化时就在边界上
+      double margin = 1.0;
+      pos(0) = gbbox_o_[0] + margin + (rand() % 1000) / 1000.0 * (gbbox_l_[0] - 2 * margin);
+      pos(1) = gbbox_o_[1] + margin + (rand() % 1000) / 1000.0 * (gbbox_l_[1] - 2 * margin);
+      pos(2) = gbbox_o_[2] + margin + (rand() % 1000) / 1000.0 * (gbbox_l_[2] - 2 * margin);
 
       // 随机生成球体直径
       double diameter = (rand() % 1000) / 1000.0 * (size_max_[0] - size_min_[0]) + size_min_[0];
@@ -91,54 +83,68 @@ public:
       size(1) = diameter;
       size(2) = diameter;
 
-      // 随机生成初始速度
-      vel(0) = ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * obs_max_speed_;
-      vel(1) = ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * obs_max_speed_;
-      vel(2) = ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * obs_max_speed_;
+      // 随机生成初始速度（方向随机，速度接近最大速度以获得更长的运动距离）
+      // 速度在 0.7*max_speed 到 max_speed 之间
+      double speed_factor = 0.7 + (rand() % 1000) / 1000.0 * 0.3;
+      vel(0) = ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * obs_max_speed_ * speed_factor;
+      vel(1) = ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * obs_max_speed_ * speed_factor;
+      vel(2) = ((rand() % 1000) / 1000.0 * 2.0 - 1.0) * obs_max_speed_ * speed_factor;
 
       pos_list_.push_back(pos);
       vel_list_.push_back(vel);
       size_list_.push_back(size);
-      center_list_.push_back(center);
-      range_list_.push_back(range);
     }
 
     last_t_ = ros::Time::now();
-    ROS_INFO("✓ Initialized %d obstacles with oscillating motion (range: 1-3m)", obs_num_);
+    ROS_INFO("✓ Initialized %d obstacles with boundary-bouncing motion", obs_num_);
+    ROS_INFO("  Motion range: entire map boundary [%.1f, %.1f, %.1f] to [%.1f, %.1f, %.1f]",
+             gbbox_o_[0], gbbox_o_[1], gbbox_o_[2],
+             gbbox_o_[0] + gbbox_l_[0], gbbox_o_[1] + gbbox_l_[1], gbbox_o_[2] + gbbox_l_[2]);
   }
 
   void updateObstacles() {
     double t_gap = (ros::Time::now() - last_t_).toSec();
 
+    // 调试用：记录反弹次数
+    static int total_bounces = 0;
+
     for (int i = 0; i < obs_num_; i++) {
       // 先更新位置
       pos_list_[i] += t_gap * vel_list_[i];
 
-      // 往返运动：检查是否超出中心点±运动半径的范围
-      // 对每个轴独立处理
-      for (int axis = 0; axis < 3; ++axis) {
-        double dist_from_center = pos_list_[i](axis) - center_list_[i](axis);
-        double max_range = range_list_[i];
+      // 原路返回模式：检查是否碰到任何边界
+      // 碰到任何边界就反转整个速度向量，实现往返运动
+      bool hit_boundary = false;
+      int hit_axis = -1;
+      double margin = 0.3;
 
-        // 如果超出运动范围，反转该轴的速度
-        if (dist_from_center < -max_range) {
-          pos_list_[i](axis) = center_list_[i](axis) - max_range;
-          vel_list_[i](axis) = fabs(vel_list_[i](axis));  // 正方向
-        } else if (dist_from_center > max_range) {
-          pos_list_[i](axis) = center_list_[i](axis) + max_range;
-          vel_list_[i](axis) = -fabs(vel_list_[i](axis));  // 负方向
+      for (int axis = 0; axis < 3; ++axis) {
+        double min_bound = gbbox_o_[axis] + margin;
+        double max_bound = gbbox_o_[axis] + gbbox_l_[axis] - margin;
+
+        // 检查是否碰到边界
+        if (pos_list_[i](axis) < min_bound) {
+          pos_list_[i](axis) = min_bound;  // 限制在边界内
+          hit_boundary = true;
+          hit_axis = axis;
+          break;  // 找到碰撞就退出
+        } else if (pos_list_[i](axis) > max_bound) {
+          pos_list_[i](axis) = max_bound;  // 限制在边界内
+          hit_boundary = true;
+          hit_axis = axis;
+          break;  // 找到碰撞就退出
         }
       }
 
-      // 额外安全检查：确保不超出全局边界
-      double margin = 0.3;
-      for (int axis = 0; axis < 3; ++axis) {
-        if (pos_list_[i](axis) < gbbox_o_[axis] + margin) {
-          pos_list_[i](axis) = gbbox_o_[axis] + margin;
-          vel_list_[i](axis) = fabs(vel_list_[i](axis));
-        } else if (pos_list_[i](axis) > gbbox_o_[axis] + gbbox_l_[axis] - margin) {
-          pos_list_[i](axis) = gbbox_o_[axis] + gbbox_l_[axis] - margin;
-          vel_list_[i](axis) = -fabs(vel_list_[i](axis));
+      // 如果碰到边界，反转整个速度向量（原路返回）
+      if (hit_boundary) {
+        vel_list_[i] = -vel_list_[i];  // 反转所有轴的速度
+
+        // 调试输出（前20次反弹）
+        if (total_bounces < 20) {
+          ROS_WARN("Obstacle %d hit boundary (axis %d), reversing full velocity: [%.2f, %.2f, %.2f]",
+                   i, hit_axis, vel_list_[i](0), vel_list_[i](1), vel_list_[i](2));
+          total_bounces++;
         }
       }
     }
