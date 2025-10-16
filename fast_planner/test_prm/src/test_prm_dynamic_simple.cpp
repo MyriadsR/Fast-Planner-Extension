@@ -15,6 +15,8 @@
 #include <random>
 #include <Eigen/Eigen>
 
+using namespace std;
+
 /* ---------- GraphNode definition ---------- */
 class GraphNode {
 public:
@@ -46,6 +48,7 @@ private:
   ros::Publisher graph_vis_pub_;
   ros::Publisher node_vis_pub_;
   ros::Publisher obs_vis_pub_;
+  ros::Publisher robot_vis_pub_;
 
   // PRM参数
   std::default_random_engine eng_;
@@ -61,14 +64,21 @@ private:
 
   double line_step_;
   double robot_speed_;
+  double robot_radius_;  // 机器人半径
   double max_sample_time_;
   int max_sample_num_;
   double safety_margin_;
   double max_prediction_time_;
+  int max_raw_path_, max_raw_path2_;
+  int reserve_num_;
+  double ratio_to_short_;
 
   ros::Time start_time_;  // 记录开始时间，用于动态障碍物动画
 
   std::list<GraphNode::Ptr> graph_;
+  vector<vector<Eigen::Vector3d>> raw_paths_;
+  vector<vector<Eigen::Vector3d>> filtered_paths_;
+  vector<vector<Eigen::Vector3d>> final_paths_;
   std::vector<std::shared_ptr<tprm::StaticSphereObstacle>> sta_obstacles_;
   std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> dyn_obstacles_;
 
@@ -85,16 +95,23 @@ public:
     graph_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/prm_graph", 10);
     node_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/prm_nodes", 10);
     obs_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/dynamic_obstacles_viz", 10);
+    robot_vis_pub_ = nh_.advertise<visualization_msgs::Marker>("/robot_sphere", 10);
 
     // 初始化随机数生成器
     eng_ = std::default_random_engine(rd_());
     rand_pos_ = std::uniform_real_distribution<double>(-1.0, 1.0);
 
     // 读取参数
-    nh_.param("robot_speed", robot_speed_, 1.0);
-    nh_.param("max_sample_time", max_sample_time_, 1.0);
-    nh_.param("max_sample_num", max_sample_num_, 2000);
-    nh_.param("safety_margin", safety_margin_, 0.3);
+    nh_.param("robot_speed", robot_speed_, 0.0);
+    nh_.param("robot_radius", robot_radius_, 0.3);  // 默认半径0.3米
+    nh_.param("max_sample_time", max_sample_time_, 0.0);
+    nh_.param("max_sample_num", max_sample_num_, -1);
+    nh_.param("safety_margin", safety_margin_, 0.0);
+    nh_.param("max_raw_path", max_raw_path_, -1);
+    nh_.param("max_raw_path2", max_raw_path2_, -1);
+    nh_.param("reserve_num", reserve_num_, 0);
+    nh_.param("ratio_to_short", ratio_to_short_, 0.0);
+    
 
     std::vector<double> inflate;
     nh_.param("sample_inflate_x", inflate, std::vector<double>());
@@ -104,8 +121,8 @@ public:
       sample_inflate_ = Eigen::Vector3d(2.0, 2.0, 1.0);
     }
 
-    line_step_ = 0.5 * robot_speed_;
-    max_prediction_time_ = 5.0;
+    line_step_ = 0.1 * robot_speed_;
+    max_prediction_time_ = 10.0;
 
     // 设置起点和终点
     start_pos_ = Eigen::Vector3d(-5.0, 0.0, 1.0);
@@ -156,20 +173,20 @@ public:
     auto dyn_obs_4 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_4, dyn_vel_4, dyn_radius_4);
     dyn_obstacles_.push_back(dyn_obs_4);
     
-    // // 障碍物5：Z 轴速度
-    // Eigen::Vector3d dyn_pos_5(0.0, 0.0, 1.0);
-    // Eigen::Vector3d dyn_vel_5(0.0, 0.0, 0.6);   
-    // double dyn_radius_5 = 0.5 + safety_margin_;
+    // 障碍物5：Z 轴速度
+    Eigen::Vector3d dyn_pos_5(0.0, 0.0, 1.0);
+    Eigen::Vector3d dyn_vel_5(0.0, 0.0, 0.6);   
+    double dyn_radius_5 = 0.5 + safety_margin_;
 
-    // auto dyn_obs_5 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_5, dyn_vel_5, dyn_radius_5);
-    // dyn_obstacles_.push_back(dyn_obs_5);
+    auto dyn_obs_5 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_5, dyn_vel_5, dyn_radius_5);
+    dyn_obstacles_.push_back(dyn_obs_5);
 
     // 添加少量静态障碍物（可选）
-    Eigen::Vector3d sta_pos_1(2.0, 2.5, 1.0);
+    Eigen::Vector3d sta_pos_1(3.0, 0.5, 1.0);
     auto sta_obs_1 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_1, 0.4);
     sta_obstacles_.push_back(sta_obs_1);
 
-    Eigen::Vector3d sta_pos_2(-2.0, -2.5, 1.0);
+    Eigen::Vector3d sta_pos_2(-2.0, -0.5, 1.0);
     auto sta_obs_2 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_2, 0.4);
     sta_obstacles_.push_back(sta_obs_2);
 
@@ -177,11 +194,11 @@ public:
     auto sta_obs_3 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_3, 0.4);
     sta_obstacles_.push_back(sta_obs_3);
 
-    Eigen::Vector3d sta_pos_4(2.0, 0.0, 1.0);
+    Eigen::Vector3d sta_pos_4(2.0, 1.0, 1.0);
     auto sta_obs_4 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_4, 0.4);
     sta_obstacles_.push_back(sta_obs_4);
 
-    Eigen::Vector3d sta_pos_5(4.0, 0.0, 1.0);
+    Eigen::Vector3d sta_pos_5(4.0, -1.0, 1.0);
     auto sta_obs_5 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_5, 0.4);
     sta_obstacles_.push_back(sta_obs_5);
 
@@ -270,7 +287,7 @@ public:
       sphere_marker.color.r = 1.0;
       sphere_marker.color.g = 0.0;
       sphere_marker.color.b = 0.0;
-      sphere_marker.color.a = 0.5;
+      sphere_marker.color.a = 1.0;
 
       markers.markers.push_back(sphere_marker);
     }
@@ -296,13 +313,142 @@ public:
       marker.color.r = 0.5;
       marker.color.g = 0.5;
       marker.color.b = 0.5;
-      marker.color.a = 0.8;
+      marker.color.a = 1.0;
 
       markers.markers.push_back(marker);
     }
 
     obs_vis_pub_.publish(markers);
     ROS_INFO("Dynamic obstacles visualization published!");
+  }
+
+  /**
+   * @brief 可视化机器人沿所有路径的运动
+   */
+  void visualizeRobotMotion() {
+    // 检查是否有可用的路径
+    if (final_paths_.empty()) {
+      return;
+    }
+
+    // 计算当前时间（相对于开始时间），与障碍物同步
+    double current_time = (ros::Time::now() - start_time_).toSec();
+
+    // 让时间在 0 到 10 秒之间循环，与障碍物同步
+    const double CYCLE_TIME = 10.0;
+    current_time = fmod(current_time, CYCLE_TIME);
+
+    visualization_msgs::MarkerArray robot_markers;
+
+    // 遍历所有路径，为每条路径创建一个机器人小球
+    for (size_t path_idx = 0; path_idx < final_paths_.size(); ++path_idx) {
+      const auto& path = final_paths_[path_idx];
+
+      // 检查路径是否有效
+      if (path.size() < 2) {
+        continue;
+      }
+
+      // 计算路径总长度
+      double total_length = pathLength(path);
+      if (total_length < 1e-6) {
+        continue;
+      }
+
+      // 计算总的运动时间
+      double total_time = total_length / robot_speed_;
+
+      // 如果路径运动时间超过循环周期，则使用循环周期内的时间
+      // 如果路径运动时间小于循环周期，则让机器人多次循环该路径
+      double effective_time = fmod(current_time, total_time);
+
+      // 计算机器人在路径上的位置
+      double traveled_distance = effective_time * robot_speed_;
+
+      // 根据已行驶的距离，在路径上找到对应的位置
+      Eigen::Vector3d robot_pos;
+      double accumulated_length = 0.0;
+      bool found = false;
+
+      for (size_t i = 0; i < path.size() - 1; ++i) {
+        double segment_length = (path[i + 1] - path[i]).norm();
+
+        if (accumulated_length + segment_length >= traveled_distance) {
+          // 机器人在这一段上
+          double ratio = (traveled_distance - accumulated_length) / segment_length;
+          robot_pos = path[i] + ratio * (path[i + 1] - path[i]);
+          found = true;
+          break;
+        }
+
+        accumulated_length += segment_length;
+      }
+
+      // 如果没找到（理论上不应该发生），使用终点
+      if (!found) {
+        robot_pos = path.back();
+      }
+
+      // 创建机器人的marker（圆球）
+      visualization_msgs::Marker robot_marker;
+      robot_marker.header.frame_id = "map";
+      robot_marker.header.stamp = ros::Time::now();
+      robot_marker.ns = "robot";
+      robot_marker.id = path_idx;
+      robot_marker.type = visualization_msgs::Marker::SPHERE;
+      robot_marker.action = visualization_msgs::Marker::ADD;
+      robot_marker.lifetime = ros::Duration(0.2);  // 设置lifetime，防止marker消失
+
+      robot_marker.pose.position.x = robot_pos(0);
+      robot_marker.pose.position.y = robot_pos(1);
+      robot_marker.pose.position.z = robot_pos(2);
+      robot_marker.pose.orientation.w = 1.0;
+
+      // 设置球体大小（直径 = 2 * 半径）
+      robot_marker.scale.x = 2.0 * robot_radius_;
+      robot_marker.scale.y = 2.0 * robot_radius_;
+      robot_marker.scale.z = 2.0 * robot_radius_;
+
+      // 为不同路径设置不同的颜色（使用HSV色彩空间生成）
+      double hue = (double)path_idx / std::max((size_t)1, final_paths_.size()) * 360.0;
+      double s = 1.0, v = 1.0;  // 使用高饱和度和高亮度
+
+      // HSV转RGB
+      double c = v * s;
+      double x = c * (1 - std::abs(std::fmod(hue / 60.0, 2.0) - 1));
+      double m = v - c;
+      double r, g, b;
+
+      if (hue < 60) { r = c; g = x; b = 0; }
+      else if (hue < 120) { r = x; g = c; b = 0; }
+      else if (hue < 180) { r = 0; g = c; b = x; }
+      else if (hue < 240) { r = 0; g = x; b = c; }
+      else if (hue < 300) { r = x; g = 0; b = c; }
+      else { r = c; g = 0; b = x; }
+
+      robot_marker.color.r = r + m;
+      robot_marker.color.g = g + m;
+      robot_marker.color.b = b + m;
+      robot_marker.color.a = 0.9;
+
+      robot_markers.markers.push_back(robot_marker);
+    }
+
+    // 发布所有机器人markers
+    if (!robot_markers.markers.empty()) {
+      // 由于publisher是单个Marker类型，我们需要分别发布每个marker
+      for (const auto& marker : robot_markers.markers) {
+        robot_vis_pub_.publish(marker);
+      }
+    }
+
+    // 打印调试信息（每秒打印一次）
+    static ros::Time last_print = ros::Time::now();
+    if ((ros::Time::now() - last_print).toSec() > 1.0) {
+      ROS_INFO("Robot motion: %lu robots, time=%.2f/%.2f",
+               final_paths_.size(), current_time, CYCLE_TIME);
+      last_print = ros::Time::now();
+    }
   }
 
   // ========== 以下是从test_prm_graph.cpp复制的辅助函数 ==========
@@ -505,7 +651,7 @@ public:
     double min_collision_time = std::numeric_limits<double>::infinity();
     double max_collision_time = 0.0;
 
-    const int samples = 10;
+    const int samples = 100;
     for (int i = 0; i <= samples; ++i) {
       double t = static_cast<double>(i) / samples;
       Eigen::Vector3d point = from + t * (to - from);
@@ -599,6 +745,62 @@ public:
     return (time >= hit_time_from - eps_dist && time <= hit_time_to + eps_dist);
   }
 
+  // 构造 PathAdapter，映射 s ∈ [0,1] → 空间 & 时间
+  struct PathAdapter
+  {
+    std::function<Eigen::Vector3d(double)> posAt;
+    std::function<double(double)> timeAt;
+  };
+
+  // 将 makePathAdapter 和 checkUTVD 从 lambda 改为类成员函数，避免在类作用域使用 `auto`
+  PathAdapter makePathAdapter(const std::array<Eigen::Vector3d, 3> &path, const std::pair<double, double> &corr)
+  {
+    double t_start = corr.first;
+    double t_end = corr.second;
+    double T = t_end - t_start;
+    PathAdapter P;
+    // 捕获 path by value，t_start 和 T by value
+    P.posAt = [path](double s) -> Eigen::Vector3d {
+      if (s <= 0.5) {
+        double u = s / 0.5;
+        return (1.0 - u) * path[0] + u * path[1];
+      } else {
+        double u = (s - 0.5) / 0.5;
+        return (1.0 - u) * path[1] + u * path[2];
+      }
+    };
+    P.timeAt = [t_start, T](double s) -> double { return t_start + s * T; };
+    return P;
+  }
+
+  // UTVD 检查函数（coarse + fine）作为类成员，可直接访问 dyn_obstacles_ 和其它成员
+  bool checkUTVD(int Ns, int N_lambda, double alpha, double theta, const PathAdapter &P1, const PathAdapter &P2, double eps_dist = 1e-3)
+  {
+    for (int i = 0; i < Ns; ++i) {
+      double s = double(i) / (Ns - 1);
+      double s2 = alpha * s + theta;
+      if (s2 < 0.0 - 1e-9 || s2 > 1.0 + 1e-9) return false;
+
+      Eigen::Vector3d p1 = P1.posAt(s);
+      Eigen::Vector3d p2 = P2.posAt(s2);
+      double t1 = P1.timeAt(s);
+      double t2 = P2.timeAt(s2);
+
+      for (int j = 0; j < N_lambda; ++j) {
+        double lambda = double(j) / (N_lambda - 1);
+        Eigen::Vector3d x = (1.0 - lambda) * p1 + lambda * p2;
+        double tau = (1.0 - lambda) * t1 + lambda * t2;
+
+        for (const auto &obs : dyn_obstacles_) {
+          if (isObstacleCollidingAtTime(obs, x, tau, eps_dist)) {
+            return false;
+          }
+        }
+      }
+    }
+    return true;
+  }
+
   bool sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode::Ptr guard2,
                         const GraphNode::Ptr connector, const Eigen::Vector3d pt) {
     // 构造路径
@@ -615,32 +817,6 @@ public:
 
     // 如果没有重叠，则返回false
     if (corridors1.empty() || corridors2.empty()) return false;
-
-    // 构造 PathAdapter，映射 s ∈ [0,1] → 空间 & 时间
-    struct PathAdapter {
-      std::function<Eigen::Vector3d(double)> posAt;
-      std::function<double(double)> timeAt;
-    };
-
-    auto makePathAdapter = [&](const std::array<Eigen::Vector3d, 3> &path, const std::pair<double, double> &corr) {
-      double t_start = corr.first;
-      double t_end = corr.second;
-      double T = t_end - t_start;
-      PathAdapter P;
-      P.posAt = [=](double s) -> Eigen::Vector3d {
-        if (s <= 0.5) {
-          double u = s / 0.5;
-          return (1.0 - u) * path[0] + u * path[1];
-        } else {
-          double u = (s - 0.5) / 0.5;
-          return (1.0 - u) * path[1] + u * path[2];
-        }
-      };
-      P.timeAt = [=](double s) -> double {
-        return t_start + s * T;
-      };
-      return P;
-    };
 
     // 遍历两路径的所有时间走廊组合
     const int Ns_coarse = 12;
@@ -666,38 +842,10 @@ public:
         auto P1 = makePathAdapter(path_new, c1);
         auto P2 = makePathAdapter(path_exist, c2);
 
-        // UTVD 检查函数（coarse + fine）
-        auto checkUTVD = [&](int Ns, int N_lambda) -> bool {
-          for (int i = 0; i < Ns; ++i) {
-            double s = double(i) / (Ns - 1);
-            double s2 = alpha * s + theta;
-            if (s2 < 0.0 - 1e-9 || s2 > 1.0 + 1e-9)
-              return false;
-
-            Eigen::Vector3d p1 = P1.posAt(s);
-            Eigen::Vector3d p2 = P2.posAt(s2);
-            double t1 = P1.timeAt(s);
-            double t2 = P2.timeAt(s2);
-
-            for (int j = 0; j < N_lambda; ++j) {
-              double lambda = double(j) / (N_lambda - 1);
-              Eigen::Vector3d x = (1.0 - lambda) * p1 + lambda * p2;
-              double tau = (1.0 - lambda) * t1 + lambda * t2;
-
-              for (const auto &obs : dyn_obstacles_) {
-                if (isObstacleCollidingAtTime(obs, x, tau, eps_dist)) {
-                  return false;
-                }
-              }
-            }
-          }
-          return true;
-        };
-
-        bool coarse_pass = checkUTVD(Ns_coarse, N_lambda_coarse);
+        bool coarse_pass = checkUTVD(Ns_coarse, N_lambda_coarse, alpha, theta, P1, P2, eps_dist);
         if (!coarse_pass)
           continue;
-        bool fine_pass = checkUTVD(Ns_fine, N_lambda_fine);
+        bool fine_pass = checkUTVD(Ns_fine, N_lambda_fine, alpha, theta, P1, P2, eps_dist);
 
         if (fine_pass) {
           return true;
@@ -768,7 +916,7 @@ public:
     graph_.clear();
 
     // 初始化步长
-    line_step_ = 0.5 * robot_speed_;
+    line_step_ = 0.1 * robot_speed_;
 
     // 初始化起点和终点节点
     GraphNode::Ptr start_node = GraphNode::Ptr(new GraphNode(start_pos_, GraphNode::Guard, 0));
@@ -836,15 +984,19 @@ public:
         // 创建新的guard节点
         GraphNode::Ptr guard = GraphNode::Ptr(new GraphNode(pt, GraphNode::Guard, ++node_id));
         graph_.push_back(guard);
+
+        // // 计算新加节点的时间安全区间
+        // auto safe_intervals = computeSafeIntervals(pt, dyn_obstacles_);
+        // safety_data_[guard->id_] = safe_intervals;
       } else if (visib_guards.size() == 2) {
         // **关键部分：考虑动态障碍物**
         auto visib_guard_1 = visib_guards[0];
         auto visib_guard_2 = visib_guards[1];
 
-        // 计算安全时间区间
-        auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->pos_, dyn_obstacles_);
-        auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->pos_, dyn_obstacles_);
-        auto safe_intervals_pt = computeSafeIntervals(pt, dyn_obstacles_);
+        // // 计算安全时间区间
+        // auto safe_intervals_1 = computeSafeIntervals(visib_guard_1->pos_, dyn_obstacles_);
+        // auto safe_intervals_2 = computeSafeIntervals(visib_guard_2->pos_, dyn_obstacles_);
+        // auto safe_intervals_pt = computeSafeIntervals(pt, dyn_obstacles_);
 
         // 检查边的安全时间窗口
         safe_edge_windows_1_ = computeEdgeSafeWindow(
@@ -892,6 +1044,10 @@ public:
         GraphNode::Ptr connector = GraphNode::Ptr(new GraphNode(pt, GraphNode::Connector, ++node_id));
         graph_.push_back(connector);
         accepted_connections++;
+
+        // // 计算新加节点的时间安全区间
+        // auto safe_intervals = computeSafeIntervals(pt, dyn_obstacles_);
+        // safety_data_[connector->id_] = safe_intervals;
 
         // 连接guards
         visib_guards[0]->neighbors_.push_back(connector);
@@ -987,45 +1143,443 @@ public:
       node_markers.markers.push_back(marker);
     }
 
-    // 可视化边
-    for (const auto& node : graph_) {
-      for (const auto& neighbor : node->neighbors_) {
-        // 避免重复绘制边
-        if (node->id_ < neighbor->id_) {
-          visualization_msgs::Marker marker;
-          marker.header.frame_id = "map";
-          marker.header.stamp = ros::Time::now();
-          marker.ns = "prm_edges";
-          marker.id = marker_id++;
-          marker.type = visualization_msgs::Marker::LINE_STRIP;
-          marker.action = visualization_msgs::Marker::ADD;
+    // // 可视化边
+    // for (const auto& node : graph_) {
+    //   for (const auto& neighbor : node->neighbors_) {
+    //     // 避免重复绘制边
+    //     if (node->id_ < neighbor->id_) {
+    //       visualization_msgs::Marker marker;
+    //       marker.header.frame_id = "map";
+    //       marker.header.stamp = ros::Time::now();
+    //       marker.ns = "prm_edges";
+    //       marker.id = marker_id++;
+    //       marker.type = visualization_msgs::Marker::LINE_STRIP;
+    //       marker.action = visualization_msgs::Marker::ADD;
 
-          geometry_msgs::Point p1, p2;
-          p1.x = node->pos_(0);
-          p1.y = node->pos_(1);
-          p1.z = node->pos_(2);
-          p2.x = neighbor->pos_(0);
-          p2.y = neighbor->pos_(1);
-          p2.z = neighbor->pos_(2);
+    //       geometry_msgs::Point p1, p2;
+    //       p1.x = node->pos_(0);
+    //       p1.y = node->pos_(1);
+    //       p1.z = node->pos_(2);
+    //       p2.x = neighbor->pos_(0);
+    //       p2.y = neighbor->pos_(1);
+    //       p2.z = neighbor->pos_(2);
 
-          marker.points.push_back(p1);
-          marker.points.push_back(p2);
+    //       marker.points.push_back(p1);
+    //       marker.points.push_back(p2);
 
-          marker.scale.x = 0.05;
-          marker.color.r = 1.0;
-          marker.color.g = 1.0;
-          marker.color.b = 0.0;
-          marker.color.a = 0.6;
+    //       marker.scale.x = 0.05;
+    //       marker.color.r = 1.0;
+    //       marker.color.g = 1.0;
+    //       marker.color.b = 0.0;
+    //       marker.color.a = 0.6;
 
-          edge_markers.markers.push_back(marker);
-        }
+    //       edge_markers.markers.push_back(marker);
+    //     }
+    //   }
+    // }
+
+    // 可视化搜索到的路径 (filtered_paths_)
+    // 可视化最终路径 (final_paths_)
+    for (size_t i = 0; i < final_paths_.size(); ++i) {
+      const auto& path = final_paths_[i];
+
+      if (path.size() < 2) continue;  // 至少需要2个点才能绘制路径
+
+      visualization_msgs::Marker path_marker;
+      path_marker.header.frame_id = "map";
+      path_marker.header.stamp = ros::Time::now();
+      path_marker.ns = "raw_paths";
+      path_marker.id = marker_id++;
+      path_marker.type = visualization_msgs::Marker::LINE_STRIP;
+      path_marker.action = visualization_msgs::Marker::ADD;
+
+      // 添加路径上的所有点
+      for (const auto& point : path) {
+        geometry_msgs::Point p;
+        p.x = point(0);
+        p.y = point(1);
+        p.z = point(2);
+        path_marker.points.push_back(p);
       }
+
+      // 设置路径线条属性
+      path_marker.scale.x = 0.08;  // 线宽，比边稍粗一点
+
+      // 为不同路径设置不同的颜色（使用HSV色彩空间生成）
+      double hue = (double)i / std::max((size_t)1, final_paths_.size()) * 360.0;
+      double s = 0.8, v = 1.0;
+
+      // HSV转RGB
+      double c = v * s;
+      double x = c * (1 - std::abs(std::fmod(hue / 60.0, 2.0) - 1));
+      double m = v - c;
+      double r, g, b;
+
+      if (hue < 60) { r = c; g = x; b = 0; }
+      else if (hue < 120) { r = x; g = c; b = 0; }
+      else if (hue < 180) { r = 0; g = c; b = x; }
+      else if (hue < 240) { r = 0; g = x; b = c; }
+      else if (hue < 300) { r = x; g = 0; b = c; }
+      else { r = c; g = 0; b = x; }
+
+      path_marker.color.r = r + m;
+      path_marker.color.g = g + m;
+      path_marker.color.b = b + m;
+      path_marker.color.a = 0.8;  // 半透明
+
+      edge_markers.markers.push_back(path_marker);
     }
 
     node_vis_pub_.publish(node_markers);
     graph_vis_pub_.publish(edge_markers);
 
-    ROS_INFO("Graph visualization published!");
+    ROS_INFO("Graph visualization published (with %lu filtered paths)!", filtered_paths_.size());
+  }
+
+  // search for useful path in the topo graph by DFS
+  vector<vector<Eigen::Vector3d>> searchPaths()
+  {
+    raw_paths_.clear();
+
+    vector<GraphNode::Ptr> visited;
+    visited.push_back(graph_.front());
+
+    depthFirstSearch(visited);
+    ROS_INFO("raw path num: %d", raw_paths_.size());
+    // 检查生成的路径时间可行性
+    vector<vector<Eigen::Vector3d>> time_raw_paths;
+    for (const auto& path : raw_paths_)
+    {
+      if (!isPathTimeSafe(path))
+      {
+        // 如果路径不安全，则丢弃
+        continue;
+      }
+      time_raw_paths.push_back(path);
+    }
+    raw_paths_ = time_raw_paths;
+    ROS_INFO("after time filtered raw path num: %d", raw_paths_.size());
+
+    // sort the path by node number
+    int min_node_num = 100000, max_node_num = 1;
+    vector<vector<int>> path_list(100);
+    for (int i = 0; i < raw_paths_.size(); ++i)
+    {
+      if (int(raw_paths_[i].size()) > max_node_num)
+        max_node_num = raw_paths_[i].size();
+      if (int(raw_paths_[i].size()) < min_node_num)
+        min_node_num = raw_paths_[i].size();
+      path_list[int(raw_paths_[i].size())].push_back(i);
+    }
+
+    // select paths with less nodes
+    vector<vector<Eigen::Vector3d>> filter_raw_paths;
+    for (int i = min_node_num; i <= max_node_num; ++i)
+    {
+      bool reach_max = false;
+      for (int j = 0; j < path_list[i].size(); ++j)
+      {
+        filter_raw_paths.push_back(raw_paths_[path_list[i][j]]);
+        if (filter_raw_paths.size() >= max_raw_path2_)
+        {
+          reach_max = true;
+          break;
+        }
+      }
+      if (reach_max)
+        break;
+    }
+    std::cout << ", raw path num: " << raw_paths_.size() << ", filtered raw path num: " << filter_raw_paths.size();
+
+    raw_paths_ = filter_raw_paths;
+
+    return raw_paths_;
+  }
+
+  void depthFirstSearch(vector<GraphNode::Ptr> &vis)
+  {
+    GraphNode::Ptr cur = vis.back();
+
+    for (int i = 0; i < cur->neighbors_.size(); ++i)
+    {
+      // check reach goal
+      if (cur->neighbors_[i]->id_ == 1)
+      {
+        // add this path to paths set
+        vector<Eigen::Vector3d> path;
+        for (int j = 0; j < vis.size(); ++j)
+        {
+          path.push_back(vis[j]->pos_);
+        }
+        path.push_back(cur->neighbors_[i]->pos_);
+
+        raw_paths_.push_back(path);
+        if (raw_paths_.size() >= max_raw_path_)
+          return;
+
+        break;
+      }
+    }
+
+    for (int i = 0; i < cur->neighbors_.size(); ++i)
+    {
+      // skip reach goal
+      if (cur->neighbors_[i]->id_ == 1)
+        continue;
+
+      // skip already visited node
+      bool revisit = false;
+      for (int j = 0; j < vis.size(); ++j)
+      {
+        if (cur->neighbors_[i]->id_ == vis[j]->id_)
+        {
+          revisit = true;
+          break;
+        }
+      }
+      if (revisit)
+        continue;
+
+      // recursive search
+      vis.push_back(cur->neighbors_[i]);
+      depthFirstSearch(vis);
+      if (raw_paths_.size() >= max_raw_path_)
+        return;
+
+      vis.pop_back();
+    }
+  }
+
+  bool isPathTimeSafe(const vector<Eigen::Vector3d> &path)
+  {
+    double travel_time = 0.0;
+    double eps_dist = 1e-3;
+    for (int i = 0; i < path.size() - 2; ++i)
+    {
+      travel_time += (path[i + 1] - path[i]).norm() / robot_speed_;
+      // 检查路径上的节点是否在安全时间区间内
+      for (const auto &obs : dyn_obstacles_)
+      {
+        if (isObstacleCollidingAtTime(obs, path[i + 1], travel_time, eps_dist))
+        {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  vector<vector<Eigen::Vector3d>> pruneEquivalent(vector<vector<Eigen::Vector3d>> &paths)
+  {
+    vector<vector<Eigen::Vector3d>> pruned_paths;
+    if (paths.size() < 1)
+      return pruned_paths;
+
+    /* ---------- prune topo equivalent path ---------- */
+    // output: pruned_paths
+    vector<int> exist_paths_id;
+    exist_paths_id.push_back(0);
+
+    for (int i = 1; i < paths.size(); ++i)
+    {
+      // compare with exsit paths
+      bool new_path = true;
+
+      for (int j = 0; j < exist_paths_id.size(); ++j)
+      {
+        // compare with one path
+        bool same_topo = sameTopoPathUTVD(paths[i], paths[exist_paths_id[j]]);
+
+        if (same_topo)
+        {
+          new_path = false;
+          break;
+        }
+      }
+
+      if (new_path)
+      {
+        exist_paths_id.push_back(i);
+      }
+    }
+
+    // save pruned paths
+    for (int i = 0; i < exist_paths_id.size(); ++i)
+    {
+      pruned_paths.push_back(paths[exist_paths_id[i]]);
+    }
+
+    std::cout << ", equivalent pruned path num: " << pruned_paths.size() << std::endl;
+    filtered_paths_ = pruned_paths;
+
+    return filtered_paths_;
+  }
+
+  // 检查两个路径是否在拓扑上等价（UTVD 检查）, 路径初筛选
+  bool sameTopoPathUTVD(const vector<Eigen::Vector3d> &path1,
+                                     const vector<Eigen::Vector3d> &path2)
+  {
+    if (path1.size() < 2 || path2.size() < 2)
+      return false;
+
+    // ================================
+    // 1. 计算路径长度和时间尺度
+    // ================================
+    double L1 = pathLength(path1);
+    double L2 = pathLength(path2);
+    double T1 = L1 / robot_speed_;
+    double T2 = L2 / robot_speed_;
+
+    double alpha = T1 / T2;
+    double theta = 0.0;
+
+    double max_len = std::max(L1, L2);
+    int N = std::ceil(max_len / line_step_);
+    if (N < 2)
+      N = 2;
+
+    // ================================
+    // 2. 构造路径采样函数
+    // ================================
+    auto interpolatePos = [&](const vector<Eigen::Vector3d> &path, double s) -> Eigen::Vector3d
+    {
+      if (path.size() == 1)
+        return path.front();
+
+      double total_len = 0.0;
+      vector<double> cum;
+      cum.push_back(0.0);
+      for (int i = 1; i < path.size(); ++i)
+      {
+        total_len += (path[i] - path[i - 1]).norm();
+        cum.push_back(total_len);
+      }
+
+      double target = s * total_len;
+      for (int i = 0; i < cum.size() - 1; ++i)
+      {
+        if (target >= cum[i] && target <= cum[i + 1])
+        {
+          double t = (target - cum[i]) / (cum[i + 1] - cum[i]);
+          // use .eval() to force evaluation to a concrete Eigen::Vector3d
+          return ((1 - t) * path[i] + t * path[i + 1]).eval();
+        }
+      }
+      return path.back();
+    };
+
+    auto pos1 = [&](double s)
+    { return interpolatePos(path1, s); };
+    auto pos2 = [&](double s)
+    { return interpolatePos(path2, s); };
+
+    auto t1 = [&](double s)
+    { return s * T1; };
+    auto t2 = [&](double s)
+    { return s * T2; };
+
+    // ================================
+    // 3. UTVD 检查（两级采样）
+    // ================================
+    const int Ns_coarse = 12;
+    const int N_lambda_coarse = 6;
+    const int Ns_fine = 48;
+    const int N_lambda_fine = 24;
+    const double eps_dist = 1e-3;
+
+    auto checkUTVD = [&](int Ns, int N_lambda)
+    {
+      for (int i = 0; i < Ns; ++i)
+      {
+        double s = double(i) / (Ns - 1);
+        double s2 = alpha * s + theta;
+        if (s2 < 0.0 || s2 > 1.0)
+          return false;
+
+        Eigen::Vector3d p1 = pos1(s);
+        Eigen::Vector3d p2 = pos2(s2);
+        double t_a = t1(s);
+        double t_b = t2(s2);
+
+        for (int j = 0; j < N_lambda; ++j)
+        {
+          double lambda = double(j) / (N_lambda - 1);
+          Eigen::Vector3d x = (1 - lambda) * p1 + lambda * p2;
+          double tau = (1 - lambda) * t_a + lambda * t_b;
+
+          // 检查所有动态障碍物
+          for (const auto &obs : dyn_obstacles_)
+          {
+            if (isObstacleCollidingAtTime(obs, x, tau, eps_dist))
+            {
+              return false;
+            }
+          }
+        }
+      }
+      return true;
+    };
+
+    bool coarse_pass = checkUTVD(Ns_coarse, N_lambda_coarse);
+    if (!coarse_pass)
+      return false;
+
+    bool fine_pass = checkUTVD(Ns_fine, N_lambda_fine);
+    return fine_pass;
+  }
+
+  vector<vector<Eigen::Vector3d>> selectShortPaths(vector<vector<Eigen::Vector3d>> &paths,
+                                                                int step)
+  {
+    /* ---------- only reserve top short path ---------- */
+    vector<vector<Eigen::Vector3d>> short_paths;
+    vector<Eigen::Vector3d> short_path;
+    double min_len;
+
+    for (int i = 0; i < reserve_num_ && paths.size() > 0; ++i)
+    {
+      int path_id = shortestPath(paths); // 找到当前最短路径的ID
+      if (i == 0)
+      {
+        short_paths.push_back(paths[path_id]);
+        min_len = pathLength(paths[path_id]); // 记录最短路径长度作为基准
+        paths.erase(paths.begin() + path_id); // 从候选路径中移除已选路径
+      }
+      else
+      {
+        double rat = pathLength(paths[path_id]) / min_len; // 计算与最短路径的长度比
+        if (rat < ratio_to_short_)
+        { // 如果比例小于阈值，则选择该路径
+          short_paths.push_back(paths[path_id]);
+          paths.erase(paths.begin() + path_id);
+        }
+        else
+        {
+          break; // 如果路径太长，提前结束选择
+        }
+      }
+    }
+    std::cout << ", final select path num: " << short_paths.size();
+
+    short_paths = pruneEquivalent(short_paths);
+
+    return short_paths;
+  }
+
+  int shortestPath(vector<vector<Eigen::Vector3d>> &paths)
+  {
+    int short_id = -1;
+    double min_len = 100000000;
+    for (int i = 0; i < paths.size(); ++i)
+    {
+      double len = pathLength(paths[i]);
+      if (len < min_len)
+      {
+        short_id = i;
+        min_len = len;
+      }
+    }
+    return short_id;
   }
 
   void run() {
@@ -1054,6 +1608,14 @@ public:
     ros::WallDuration _create_dur = ros::WallTime::now() - _create_start;
     ROS_WARN("createGraph elapsed: %.6f s (%.3f ms)", _create_dur.toSec(), _create_dur.toSec() * 1000.0);
 
+    // 搜索路径
+    ROS_INFO("\nSearching for paths...");
+    raw_paths_ = searchPaths();
+
+    filtered_paths_ = pruneEquivalent(raw_paths_);
+
+    final_paths_ = selectShortPaths(filtered_paths_, 1);
+
     visualizeGraph();
 
     ROS_INFO("\n=== Test Complete ===");
@@ -1063,13 +1625,16 @@ public:
     ROS_INFO("  - Static obstacles (gray spheres)");
     ROS_INFO("  - PRM graph nodes (blue=guards, green=connectors)");
     ROS_INFO("  - PRM graph edges (yellow lines)");
+    ROS_INFO("  - Robot sphere (cyan) moving along the first path");
     ROS_INFO("\nThe graph should avoid both static and dynamic obstacles,");
-    ROS_INFO("and demonstrate time-homotopic topology classes.\n");
+    ROS_INFO("and demonstrate time-homotopic topology classes.");
+    ROS_INFO("The robot will follow the first selected path with time synchronized to obstacles.\n");
 
     // 保持运行以持续发布可视化
     while (ros::ok()) {
       visualizeDynamicObstacles();
       visualizeGraph();
+      visualizeRobotMotion();  // 可视化机器人沿路径运动
       ros::spinOnce();
       rate.sleep();
     }

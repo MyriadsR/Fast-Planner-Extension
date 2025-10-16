@@ -8,13 +8,18 @@
   <!-- 该节点会自动创建静态和动态障碍物，无需外部发布 -->
   <node pkg="test_prm" type="test_prm_dynamic_simple_node" name="test_prm_dynamic_simple" output="screen">
     <!-- PRM参数 -->
-    <param name="robot_speed" value="0.1" />
+    <param name="robot_speed" value="1.0125" />
+    <param name="robot_radius" value="0.05" />
     <param name="max_sample_time" value="1.0" />
     <param name="max_sample_num" value="500" />
     <param name="safety_margin" value="0.3" />
+    <param name="max_raw_path" value="300" />
+    <param name="max_raw_path2" value="25" />
+    <param name="reserve_num" value="6" />
+    <param name="ratio_to_short" value="4" />
 
     <!-- 采样区域参数 -->
-    <rosparam param="sample_inflate_x">[1.0, 1.0, 1.0]</rosparam>
+    <rosparam param="sample_inflate_x">[1.0, 2.0, 2.0]</rosparam>
   </node>
 
 </launch>

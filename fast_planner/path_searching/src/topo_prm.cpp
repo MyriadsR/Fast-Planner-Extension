@@ -363,28 +363,32 @@ vector<vector<Eigen::Vector3d>> TopologyPRM::selectShortPaths(vector<vector<Eige
   double min_len;
 
   for (int i = 0; i < reserve_num_ && paths.size() > 0; ++i) {
-    int path_id = shortestPath(paths);
+    int path_id = shortestPath(paths);  // 找到当前最短路径的ID
     if (i == 0) {
-      short_paths.push_back(paths[path_id]);
-      min_len = pathLength(paths[path_id]);
-      paths.erase(paths.begin() + path_id);
-    } else {
-      double rat = pathLength(paths[path_id]) / min_len;
-      if (rat < ratio_to_short_) {
         short_paths.push_back(paths[path_id]);
-        paths.erase(paths.begin() + path_id);
-      } else {
-        break;
-      }
+        min_len = pathLength(paths[path_id]);  // 记录最短路径长度作为基准
+        paths.erase(paths.begin() + path_id);  // 从候选路径中移除已选路径
+    }
+    else {
+        double rat = pathLength(paths[path_id]) / min_len;  // 计算与最短路径的长度比
+        if (rat < ratio_to_short_) {  // 如果比例小于阈值，则选择该路径
+            short_paths.push_back(paths[path_id]);
+            paths.erase(paths.begin() + path_id);
+        } else {
+            break;  // 如果路径太长，提前结束选择
+        }
     }
   }
   std::cout << ", select path num: " << short_paths.size();
 
   /* ---------- merge with start and end segment ---------- */
   for (int i = 0; i < short_paths.size(); ++i) {
-    short_paths[i].insert(short_paths[i].begin(), start_pts_.begin(), start_pts_.end());
-    short_paths[i].insert(short_paths[i].end(), end_pts_.begin(), end_pts_.end());
+      // 在路径开头添加起始点序列
+      short_paths[i].insert(short_paths[i].begin(), start_pts_.begin(), start_pts_.end());
+      // 在路径末尾添加结束点序列
+      short_paths[i].insert(short_paths[i].end(), end_pts_.begin(), end_pts_.end());
   }
+
   for (int i = 0; i < short_paths.size(); ++i) {
     shortcutPath(short_paths[i], i, 5);
     short_paths[i] = short_paths_[i];

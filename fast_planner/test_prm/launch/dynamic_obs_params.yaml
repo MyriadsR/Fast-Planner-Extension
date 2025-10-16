@@ -7,7 +7,7 @@ world_frame: "map"
 obs_num: 10
 
 # 障碍物最大速度 (m/s) - 增加速度以获得更长的运动距离
-obs_max_speed: 0.5
+obs_max_speed: 1.0
 
 # 发布频率 (Hz)
 freq: 30
