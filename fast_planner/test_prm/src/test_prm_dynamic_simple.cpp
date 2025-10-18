@@ -640,18 +640,17 @@ public:
     return safe_intervals;
   }
 
-  std::pair<double, double> computeObstacleCollisionWindow(
+  std::vector<std::pair<double, double>> computeObstacleCollisionWindows(
       const Eigen::Vector3d& from,
       const Eigen::Vector3d& to,
       const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
       double robot_speed) {
+    std::vector<std::pair<double, double>> intervals;
+
     double distance = (to - from).norm();
     double travel_time = distance / robot_speed;
 
-    double min_collision_time = std::numeric_limits<double>::infinity();
-    double max_collision_time = 0.0;
-
-    const int samples = 100;
+    const int samples = 10;
     for (int i = 0; i <= samples; ++i) {
       double t = static_cast<double>(i) / samples;
       Eigen::Vector3d point = from + t * (to - from);
@@ -659,19 +658,23 @@ public:
 
       double hit_from, hit_to;
       if (obstacle->isColliding(point, hit_from, hit_to)) {
-        double adjusted_from = std::max(0.0, hit_from - segment_time);
-        double adjusted_to = std::max(0.0, hit_to - segment_time);
+        double adjusted_from = hit_from - segment_time;
+        double adjusted_to = hit_to - segment_time;
 
-        min_collision_time = std::min(min_collision_time, adjusted_from);
-        max_collision_time = std::max(max_collision_time, adjusted_to);
+        // 只保留与 [0, max_prediction_time_] 有交集的区间，并做裁剪
+        if (adjusted_to >= 0.0 && adjusted_from <= max_prediction_time_) {
+          adjusted_from = std::max(0.0, adjusted_from);
+          adjusted_to = std::min(max_prediction_time_, adjusted_to);
+          if (adjusted_from < adjusted_to) {
+            intervals.emplace_back(adjusted_from, adjusted_to);
+          }
+        }
       }
     }
 
-    if (min_collision_time < std::numeric_limits<double>::infinity()) {
-      return {min_collision_time, max_collision_time};
-    }
-
-    return {std::numeric_limits<double>::infinity(), 0.0};
+    // 合并采样产生的离散碰撞区间
+    intervals = mergeIntervals(intervals);
+    return intervals;
   }
 
   std::vector<std::pair<double, double>> computeEdgeSafeWindow(
@@ -683,12 +686,14 @@ public:
     std::vector<std::pair<double, double>> collision_windows;
 
     for (const auto& obstacle : obstacles) {
-      auto window = computeObstacleCollisionWindow(from, to, obstacle, robot_speed);
-      if (window.first < window.second) {
-        // 限制碰撞窗口的结束时间
-        if (window.first < max_prediction_time_) {
-          window.second = std::min(window.second, max_prediction_time_);
-          collision_windows.push_back(window);
+      auto windows = computeObstacleCollisionWindows(from, to, obstacle, robot_speed);
+      for (auto w : windows) {
+        if (w.first < w.second) {
+          // 再次确保在预测时间范围内
+          if (w.first < max_prediction_time_) {
+            w.second = std::min(w.second, max_prediction_time_);
+            collision_windows.push_back(w);
+          }
         }
       }
     }
@@ -811,9 +816,18 @@ public:
     safe_edge_windows_3_ = computeEdgeSafeWindow(guard1->pos_, connector->pos_, dyn_obstacles_, robot_speed_);
     safe_edge_windows_4_ = computeEdgeSafeWindow(connector->pos_, guard2->pos_, dyn_obstacles_, robot_speed_);
 
-    // 计算两个边的安全时间窗口的交集
-    auto corridors1 = intersectIntervals(safe_edge_windows_1_, safe_edge_windows_2_);
-    auto corridors2 = intersectIntervals(safe_edge_windows_3_, safe_edge_windows_4_);
+    // 计算两个边的安全时间窗口的交集（考虑到达时间平移）
+    double T_edge1_new = (pt - guard1->pos_).norm() / robot_speed_;
+    std::vector<std::pair<double,double>> shifted2_new;
+    shifted2_new.reserve(safe_edge_windows_2_.size());
+    for (const auto& w : safe_edge_windows_2_) shifted2_new.emplace_back(w.first - T_edge1_new, w.second - T_edge1_new);
+    auto corridors1 = intersectIntervals(safe_edge_windows_1_, shifted2_new);
+
+    double T_edge1_exist = (connector->pos_ - guard1->pos_).norm() / robot_speed_;
+    std::vector<std::pair<double,double>> shifted2_exist;
+    shifted2_exist.reserve(safe_edge_windows_4_.size());
+    for (const auto& w : safe_edge_windows_4_) shifted2_exist.emplace_back(w.first - T_edge1_exist, w.second - T_edge1_exist);
+    auto corridors2 = intersectIntervals(safe_edge_windows_3_, shifted2_exist);
 
     // 如果没有重叠，则返回false
     if (corridors1.empty() || corridors2.empty()) return false;
@@ -1025,8 +1039,15 @@ public:
           return false;
         };
 
+        // 对第二条边的安全窗口按第一条边的旅行时间进行平移后再判断重叠
+        double T_edge1 = (pt - visib_guard_1->pos_).norm() / robot_speed_;
+        std::vector<std::pair<double, double>> shifted_edge2;
+        shifted_edge2.reserve(safe_edge_windows_2_.size());
+        for (const auto& w : safe_edge_windows_2_) {
+          shifted_edge2.emplace_back(w.first - T_edge1, w.second - T_edge1);
+        }
         // 如果没有时间窗口重叠，则拒绝连接
-        if (!intervalsOverlap(safe_edge_windows_1_, safe_edge_windows_2_)) {
+        if (!intervalsOverlap(safe_edge_windows_1_, shifted_edge2)) {
           rejected_by_time_window++;
           sample_time += (ros::Time::now() - t1).toSec();
           continue;
@@ -1353,18 +1374,33 @@ public:
   bool isPathTimeSafe(const vector<Eigen::Vector3d> &path)
   {
     double travel_time = 0.0;
-    double eps_dist = 1e-3;
-    for (int i = 0; i < path.size() - 2; ++i)
+    const int samples_per_seg = 15;  // 段内采样数
+    const double eps_dist = 1e-3;
+
+    for (int i = 0; i < static_cast<int>(path.size()) - 1; ++i)
     {
-      travel_time += (path[i + 1] - path[i]).norm() / robot_speed_;
-      // 检查路径上的节点是否在安全时间区间内
-      for (const auto &obs : dyn_obstacles_)
+      Eigen::Vector3d p0 = path[i];
+      Eigen::Vector3d p1 = path[i + 1];
+      double seg_len = (p1 - p0).norm();
+      if (seg_len <= 1e-9) continue;
+      double seg_time = seg_len / robot_speed_;
+
+      for (int k = 1; k <= samples_per_seg; ++k)
       {
-        if (isObstacleCollidingAtTime(obs, path[i + 1], travel_time, eps_dist))
+        double s = static_cast<double>(k) / samples_per_seg;  // (0,1]
+        Eigen::Vector3d x = (1.0 - s) * p0 + s * p1;
+        double t = travel_time + s * seg_time;
+
+        for (const auto &obs : dyn_obstacles_)
         {
-          return false;
+          if (isObstacleCollidingAtTime(obs, x, t, eps_dist))
+          {
+            return false;
+          }
         }
       }
+
+      travel_time += seg_time;
     }
     return true;
   }
@@ -1610,11 +1646,20 @@ public:
 
     // 搜索路径
     ROS_INFO("\nSearching for paths...");
+    _create_start = ros::WallTime::now();
     raw_paths_ = searchPaths();
+    _create_dur = ros::WallTime::now() - _create_start;
+    ROS_WARN("searchPaths elapsed: %.6f s (%.3f ms)", _create_dur.toSec(), _create_dur.toSec() * 1000.0);
 
+    _create_start = ros::WallTime::now();
     filtered_paths_ = pruneEquivalent(raw_paths_);
+    _create_dur = ros::WallTime::now() - _create_start;
+    ROS_WARN("pruneEquivalent elapsed: %.6f s (%.3f ms)", _create_dur.toSec(), _create_dur.toSec() * 1000.0);
 
+    _create_start = ros::WallTime::now();
     final_paths_ = selectShortPaths(filtered_paths_, 1);
+    _create_dur = ros::WallTime::now() - _create_start;
+    ROS_WARN("selectShortPaths elapsed: %.6f s (%.3f ms)", _create_dur.toSec(), _create_dur.toSec() * 1000.0);
 
     visualizeGraph();
 
