@@ -1,117 +1,124 @@
 <launch>
-  <!-- global parameters -->
+  <!--
+    ===========================================
+    topo_replan with Dynamic Cube Obstacles
+    ===========================================
+
+    这个launch文件展示如何在 topo_replan.launch 中集成动态立方体障碍物
+
+    使用方法:
+    roslaunch dynamic_obstacles topo_replan_with_dynamic_obs.launch
+  -->
+
+  <!-- 地图参数（与 topo_replan.launch 保持一致） -->
   <arg name="map_size_x" value="40.0"/>
   <arg name="map_size_y" value="20.0"/>
   <arg name="map_size_z" value=" 5.0"/>
-
   <arg name="odom_topic" value="/state_ukf/odom" />
 
-  <!-- main algorithm params -->
+  <!-- 动态障碍物参数 -->
+  <arg name="enable_dynamic_obs" default="true"/>
+  <arg name="dynamic_obs_num" default="5"/>
+  <arg name="dynamic_obs_speed" default="1.0"/>
+
+  <!-- ========== 启动原有的 topo_replan 系统 ========== -->
+
+  <!-- 1. 主算法 -->
   <include file="$(find plan_manage)/launch/topo_algorithm.xml">
-    <!-- size of map -->
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
     <arg name="map_size_y_" value="$(arg map_size_y)"/>
     <arg name="map_size_z_" value="$(arg map_size_z)"/>
     <arg name="odometry_topic" value="$(arg odom_topic)"/>
 
-    <!-- camera pose: transform of camera frame in the world frame -->
-    <!-- depth topic: depth image, 640x480 by default -->
-    <!-- don't set cloud_topic if you already set these ones! -->
     <arg name="camera_pose_topic" value="/pcl_render_node/camera_pose"/>
     <arg name="depth_topic" value="/pcl_render_node/depth"/>
-
-    <!-- topic of point cloud measurement, such as from LIDAR  -->
-    <!-- don't set camera pose and depth, if you already set this one! -->
     <arg name="cloud_topic" value="/pcl_render_node/cloud"/>
 
-    <!-- intrinsic params of the depth camera -->
     <arg name="cx" value="321.04638671875"/>
     <arg name="cy" value="243.44969177246094"/>
     <arg name="fx" value="387.229248046875"/>
     <arg name="fy" value="387.229248046875"/>
 
-    <!-- maximum velocity and acceleration the drone will reach -->
     <arg name="max_vel" value="3.0" />
     <arg name="max_acc" value="2.5" />
 
-    <!-- 1: use 2D Nav Goal to select goal  -->
-    <!-- 2: use global waypoints below  -->
-    <!-- 3: use global waypoints below to set reference path --> 
     <arg name="flight_type" value="2" />
 
-    <!-- global waypoints -->
     <arg name="point_num" value="3" />
-
     <arg name="point0_x" value="19.0" />
     <arg name="point0_y" value="0.0" />
     <arg name="point0_z" value="1.0" />
-
-    <!-- set more waypoints if you need -->
     <arg name="point1_x" value="19.0" />
     <arg name="point1_y" value="10.0" />
     <arg name="point1_z" value="1.0" />
-
     <arg name="point2_x" value="-19.0" />
     <arg name="point2_y" value="0.0" />
     <arg name="point2_z" value="1.0" />
   </include>
 
-  <!-- trajectory server -->
+  <!-- 2. 轨迹服务器 -->
   <node pkg="plan_manage" name="traj_server" type="traj_server" output="screen">
     <remap from="/position_cmd" to="planning/pos_cmd"/>
-
     <remap from="/odom_world" to="$(arg odom_topic)"/>
     <param name="traj_server/time_forward" value="1.5" type="double"/>
   </node>
 
+  <!-- 3. 航点生成器 -->
   <node pkg="waypoint_generator" name="waypoint_generator" type="waypoint_generator" output="screen">
-    <remap from="~odom" to="$(arg odom_topic)"/>        
+    <remap from="~odom" to="$(arg odom_topic)"/>
     <remap from="~goal" to="/move_base_simple/goal"/>
     <remap from="~traj_start_trigger" to="/traj_start_trigger" />
-    <param name="waypoint_type" value="manual-lonely-waypoint"/>    
+    <param name="waypoint_type" value="manual-lonely-waypoint"/>
   </node>
 
-  <!-- use simulator -->
+  <!-- 4. 仿真器（静态障碍物） -->
   <include file="$(find plan_manage)/launch/simulator.xml">
     <arg name="map_size_x_" value="$(arg map_size_x)"/>
     <arg name="map_size_y_" value="$(arg map_size_y)"/>
     <arg name="map_size_z_" value="$(arg map_size_z)"/>
     <arg name="c_num" value="100"/>
     <arg name="p_num" value="100"/>
-
     <arg name="odometry_topic" value="$(arg odom_topic)" />
   </include>
 
-</launch>
-
-
-  <!-- ========== Dynamic Cube Obstacles (New Feature) ========== -->
-  <!-- <arg name="enable_dynamic_obs" default="true"/>
-  <arg name="dynamic_obs_num" default="5"/>
-  <arg name="dynamic_obs_speed" default="1.0"/>
+  <!-- ========== 新增：动态立方体障碍物 ========== -->
 
   <group if="$(arg enable_dynamic_obs)">
     <node pkg="dynamic_obstacles" type="dynamic_cube_obstacles"
           name="dynamic_cube_obstacles" output="screen">
 
+      <!-- 基本参数 -->
       <param name="world_frame" value="world"/>
       <param name="obs_num" value="$(arg dynamic_obs_num)"/>
       <param name="obs_max_speed" value="$(arg dynamic_obs_speed)"/>
       <param name="freq" value="10.0"/>
-      <param name="resolution" value="0.2"/> -->
+      <param name="resolution" value="0.2"/>
 
-      <!-- Cube size range -->
-      <!-- <param name="size_min_x" value="0.5"/>
+      <!-- 立方体尺寸范围 -->
+      <param name="size_min_x" value="0.5"/>
       <param name="size_min_y" value="0.5"/>
       <param name="size_min_z" value="0.5"/>
       <param name="size_max_x" value="1.5"/>
       <param name="size_max_y" value="1.5"/>
-      <param name="size_max_z" value="2.0"/> -->
+      <param name="size_max_z" value="2.0"/>
 
-      <!-- Point cloud output for ESDF conversion -->
-      <!-- <remap from="~cloud" to="/dynamic_obstacles/cloud"/>
+      <!--
+        重要：将动态障碍物点云发布到 pcl_render_node 可以看到的地方
+        方式1：发布到独立话题（用于调试）
+        方式2：合并到静态地图（需要修改 pcl_render_node 或 sdf_map）
+      -->
+      <remap from="~cloud" to="/dynamic_obstacles/cloud"/>
       <remap from="~vis" to="/dynamic_obstacles/vis"/>
     </node>
-  </group> -->
 
+    <!-- 提示信息 -->
+    <node pkg="rostopic" type="rostopic" name="dynamic_obs_info"
+          args="echo /dynamic_obstacles/cloud/header -n 1" output="screen"/>
+  </group>
 
+  <!-- ========== RViz 可视化 ========== -->
+  <node pkg="rviz" type="rviz" name="rviz"
+        args="-d $(find plan_manage)/config/traj.rviz"
+        output="screen"/>
+
+</launch>

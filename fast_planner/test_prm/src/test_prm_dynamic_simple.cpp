@@ -103,10 +103,10 @@ public:
 
     // 读取参数
     nh_.param("robot_speed", robot_speed_, 0.0);
-    nh_.param("robot_radius", robot_radius_, 0.3);  // 默认半径0.3米
+    nh_.param("robot_radius", robot_radius_, 0.3);  // 默认半径0.3米，碰撞时会考虑
     nh_.param("max_sample_time", max_sample_time_, 0.0);
     nh_.param("max_sample_num", max_sample_num_, -1);
-    nh_.param("safety_margin", safety_margin_, 0.0);
+    nh_.param("safety_margin", safety_margin_, 0.0);  // 障碍物膨胀半径
     nh_.param("max_raw_path", max_raw_path_, -1);
     nh_.param("max_raw_path2", max_raw_path2_, -1);
     nh_.param("reserve_num", reserve_num_, 0);
@@ -173,33 +173,33 @@ public:
     auto dyn_obs_4 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_4, dyn_vel_4, dyn_radius_4);
     dyn_obstacles_.push_back(dyn_obs_4);
     
-    // 障碍物5：Z 轴速度
-    Eigen::Vector3d dyn_pos_5(0.0, 0.0, 1.0);
-    Eigen::Vector3d dyn_vel_5(0.0, 0.0, 0.6);   
-    double dyn_radius_5 = 0.5 + safety_margin_;
+    // // 障碍物5：Z 轴速度
+    // Eigen::Vector3d dyn_pos_5(0.0, 0.0, 1.0);
+    // Eigen::Vector3d dyn_vel_5(0.0, 0.0, 0.6);   
+    // double dyn_radius_5 = 0.5 + safety_margin_;
 
-    auto dyn_obs_5 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_5, dyn_vel_5, dyn_radius_5);
-    dyn_obstacles_.push_back(dyn_obs_5);
+    // auto dyn_obs_5 = std::make_shared<tprm::DynamicSphereObstacle>(dyn_pos_5, dyn_vel_5, dyn_radius_5);
+    // dyn_obstacles_.push_back(dyn_obs_5);
 
     // 添加少量静态障碍物（可选）
     Eigen::Vector3d sta_pos_1(3.0, 0.5, 1.0);
-    auto sta_obs_1 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_1, 0.4);
+    auto sta_obs_1 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_1, 0.4 + safety_margin_);
     sta_obstacles_.push_back(sta_obs_1);
 
     Eigen::Vector3d sta_pos_2(-2.0, -0.5, 1.0);
-    auto sta_obs_2 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_2, 0.4);
+    auto sta_obs_2 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_2, 0.4 + safety_margin_);
     sta_obstacles_.push_back(sta_obs_2);
 
     Eigen::Vector3d sta_pos_3(0.0, 0.0, 1.0);
-    auto sta_obs_3 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_3, 0.4);
+    auto sta_obs_3 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_3, 0.4 + safety_margin_);
     sta_obstacles_.push_back(sta_obs_3);
 
     Eigen::Vector3d sta_pos_4(2.0, 1.0, 1.0);
-    auto sta_obs_4 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_4, 0.4);
+    auto sta_obs_4 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_4, 0.4 + safety_margin_);
     sta_obstacles_.push_back(sta_obs_4);
 
     Eigen::Vector3d sta_pos_5(4.0, -1.0, 1.0);
-    auto sta_obs_5 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_5, 0.4);
+    auto sta_obs_5 = std::make_shared<tprm::StaticSphereObstacle>(sta_pos_5, 0.4 + safety_margin_);
     sta_obstacles_.push_back(sta_obs_5);
 
     // Eigen::Vector3d sta_pos_6(-2.0, 0.0, 1.0);
@@ -453,6 +453,95 @@ public:
 
   // ========== 以下是从test_prm_graph.cpp复制的辅助函数 ==========
 
+  /**
+   * @brief 检查静态障碍物碰撞（考虑机器人半径）
+   * @param obstacle 静态障碍物
+   * @param position 机器人中心位置
+   * @return 是否发生碰撞
+   */
+  bool isStaticObstacleColliding(
+      const std::shared_ptr<tprm::StaticSphereObstacle>& obstacle,
+      const Eigen::Vector3d& position) const {
+    // 计算机器人中心到障碍物中心的距离
+    Eigen::Vector3d obs_center = obstacle->getCOM();
+    double distance = (position - obs_center).norm();
+
+    // 碰撞条件：距离 < 障碍物半径 + 机器人半径
+    double collision_threshold = obstacle->getRadius() + robot_radius_;
+
+    return distance < collision_threshold;
+  }
+
+  /**
+   * @brief 检查动态障碍物碰撞（考虑机器人半径）
+   * @param obstacle 动态障碍物
+   * @param position 机器人中心位置
+   * @param hit_time_from 碰撞开始时间（输出参数）
+   * @param hit_time_to 碰撞结束时间（输出参数）
+   * @return 是否发生碰撞
+   */
+  bool isDynamicObstacleColliding(
+      const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
+      const Eigen::Vector3d& position,
+      double& hit_time_from,
+      double& hit_time_to) const {
+    // 手动计算考虑机器人半径的碰撞
+    // 障碍物位置: p_obs(t) = p0 + v * t
+    // 机器人位置: p_robot = position (固定)
+    // 碰撞条件: ||p_obs(t) - p_robot|| < r_obs + r_robot
+
+    Eigen::Vector3d p0 = obstacle->getCOM(0.0);
+    Eigen::Vector3d vel = obstacle->getVelocity();
+    double r_obs = obstacle->getRadius();
+    double r_total = r_obs + robot_radius_;
+
+    // 求解二次方程: ||p0 + v*t - position||^2 = r_total^2
+    // 展开: ||dp + v*t||^2 = r_total^2, 其中 dp = p0 - position
+    // (dp + v*t)·(dp + v*t) = r_total^2
+    // dp·dp + 2*dp·v*t + v·v*t^2 = r_total^2
+    // a*t^2 + b*t + c = 0
+    Eigen::Vector3d dp = p0 - position;
+    double a = vel.dot(vel);
+    double b = 2.0 * dp.dot(vel);
+    double c = dp.dot(dp) - r_total * r_total;
+
+    double discriminant = b * b - 4.0 * a * c;
+
+    if (discriminant < 0.0) {
+      // 无碰撞
+      return false;
+    }
+
+    if (std::abs(a) < 1e-9) {
+      // 障碍物静止
+      if (c < 0.0) {
+        // 一直在碰撞范围内
+        hit_time_from = 0.0;
+        hit_time_to = max_prediction_time_;
+        return true;
+      } else {
+        return false;
+      }
+    }
+
+    double sqrt_discriminant = std::sqrt(discriminant);
+    double t1 = (-b - sqrt_discriminant) / (2.0 * a);
+    double t2 = (-b + sqrt_discriminant) / (2.0 * a);
+
+    // 确保 t1 <= t2
+    if (t1 > t2) std::swap(t1, t2);
+
+    // 只考虑未来的碰撞
+    if (t2 < 0.0) {
+      return false;
+    }
+
+    hit_time_from = std::max(0.0, t1);
+    hit_time_to = std::min(max_prediction_time_, t2);
+
+    return hit_time_from < max_prediction_time_;
+  }
+
   Eigen::Vector3d getSample() {
     Eigen::Vector3d pt;
     pt(0) = rand_pos_(eng_) * sample_r_(0);
@@ -475,7 +564,8 @@ public:
       Eigen::Vector3d pt = p1 + dir * s;
 
       for (const auto& obstacle : sta_obstacles_) {
-        if (obstacle->isColliding(pt)) {
+        // 使用考虑机器人半径的碰撞检测
+        if (isStaticObstacleColliding(obstacle, pt)) {
           pc = pt;
           return false;
         }
@@ -485,7 +575,8 @@ public:
 
     // 检查终点
     for (const auto& obstacle : sta_obstacles_) {
-      if (obstacle->isColliding(p2)) {
+      // 使用考虑机器人半径的碰撞检测
+      if (isStaticObstacleColliding(obstacle, p2)) {
         pc = p2;
         return false;
       }
@@ -601,10 +692,11 @@ public:
     std::vector<std::pair<double, double>> safe_intervals;
     std::vector<std::pair<double, double>> collision_intervals;
 
-    // 收集所有障碍物的碰撞时间间隔
+    // 收集所有障碍物的碰撞时间间隔（考虑机器人半径）
     for (const auto& obstacle : obstacles) {
       double hit_time_from, hit_time_to;
-      if (obstacle->isColliding(position, hit_time_from, hit_time_to)) {
+      // 使用考虑机器人半径的碰撞检测
+      if (isDynamicObstacleColliding(obstacle, position, hit_time_from, hit_time_to)) {
         // 只考虑max_prediction_time内的碰撞
         if (hit_time_from < max_prediction_time_) {
           hit_time_to = std::min(hit_time_to, max_prediction_time_);
@@ -657,7 +749,8 @@ public:
       double segment_time = t * travel_time;
 
       double hit_from, hit_to;
-      if (obstacle->isColliding(point, hit_from, hit_to)) {
+      // 使用考虑机器人半径的碰撞检测
+      if (isDynamicObstacleColliding(obstacle, point, hit_from, hit_to)) {
         double adjusted_from = hit_from - segment_time;
         double adjusted_to = hit_to - segment_time;
 
@@ -743,7 +836,8 @@ public:
       double time,
       double eps_dist = 1e-3) const {
     double hit_time_from, hit_time_to;
-    if (!obstacle->isColliding(position, hit_time_from, hit_time_to)) {
+    // 使用考虑机器人半径的碰撞检测
+    if (!isDynamicObstacleColliding(obstacle, position, hit_time_from, hit_time_to)) {
       return false;
     }
 
@@ -977,10 +1071,11 @@ public:
       Eigen::Vector3d pt = getSample();
       ++sample_num;
 
-      // 检查采样点是否在静态障碍物内
+      // 检查采样点是否在静态障碍物内（考虑机器人半径）
       bool is_blocked = false;
       for (const auto& obstacle : sta_obstacles_) {
-        if (obstacle->isColliding(pt)) {
+        // 使用考虑机器人半径的碰撞检测
+        if (isStaticObstacleColliding(obstacle, pt)) {
           is_blocked = true;
           break;
         }
@@ -1266,7 +1361,7 @@ public:
     visited.push_back(graph_.front());
 
     depthFirstSearch(visited);
-    ROS_INFO("raw path num: %d", raw_paths_.size());
+    ROS_INFO("raw path num: %ld", raw_paths_.size());
     // 检查生成的路径时间可行性
     vector<vector<Eigen::Vector3d>> time_raw_paths;
     for (const auto& path : raw_paths_)
@@ -1279,12 +1374,12 @@ public:
       time_raw_paths.push_back(path);
     }
     raw_paths_ = time_raw_paths;
-    ROS_INFO("after time filtered raw path num: %d", raw_paths_.size());
+    ROS_INFO("after time filtered raw path num: %ld", raw_paths_.size());
 
     // sort the path by node number
     int min_node_num = 100000, max_node_num = 1;
     vector<vector<int>> path_list(100);
-    for (int i = 0; i < raw_paths_.size(); ++i)
+    for (size_t i = 0; i < raw_paths_.size(); ++i)
     {
       if (int(raw_paths_[i].size()) > max_node_num)
         max_node_num = raw_paths_[i].size();
@@ -1298,7 +1393,7 @@ public:
     for (int i = min_node_num; i <= max_node_num; ++i)
     {
       bool reach_max = false;
-      for (int j = 0; j < path_list[i].size(); ++j)
+      for (size_t j = 0; j < path_list[i].size(); ++j)
       {
         filter_raw_paths.push_back(raw_paths_[path_list[i][j]]);
         if (filter_raw_paths.size() >= max_raw_path2_)
@@ -1321,14 +1416,14 @@ public:
   {
     GraphNode::Ptr cur = vis.back();
 
-    for (int i = 0; i < cur->neighbors_.size(); ++i)
+    for (size_t i = 0; i < cur->neighbors_.size(); ++i)
     {
       // check reach goal
       if (cur->neighbors_[i]->id_ == 1)
       {
         // add this path to paths set
         vector<Eigen::Vector3d> path;
-        for (int j = 0; j < vis.size(); ++j)
+        for (size_t j = 0; j < vis.size(); ++j)
         {
           path.push_back(vis[j]->pos_);
         }
@@ -1342,7 +1437,7 @@ public:
       }
     }
 
-    for (int i = 0; i < cur->neighbors_.size(); ++i)
+    for (size_t i = 0; i < cur->neighbors_.size(); ++i)
     {
       // skip reach goal
       if (cur->neighbors_[i]->id_ == 1)
@@ -1350,7 +1445,7 @@ public:
 
       // skip already visited node
       bool revisit = false;
-      for (int j = 0; j < vis.size(); ++j)
+      for (size_t j = 0; j < vis.size(); ++j)
       {
         if (cur->neighbors_[i]->id_ == vis[j]->id_)
         {
@@ -1374,7 +1469,7 @@ public:
   bool isPathTimeSafe(const vector<Eigen::Vector3d> &path)
   {
     double travel_time = 0.0;
-    const int samples_per_seg = 15;  // 段内采样数
+    const int samples_per_seg = 10;  // 段内采样数
     const double eps_dist = 1e-3;
 
     for (int i = 0; i < static_cast<int>(path.size()) - 1; ++i)
@@ -1416,12 +1511,12 @@ public:
     vector<int> exist_paths_id;
     exist_paths_id.push_back(0);
 
-    for (int i = 1; i < paths.size(); ++i)
+    for (size_t i = 1; i < paths.size(); ++i)
     {
       // compare with exsit paths
       bool new_path = true;
 
-      for (int j = 0; j < exist_paths_id.size(); ++j)
+      for (size_t j = 0; j < exist_paths_id.size(); ++j)
       {
         // compare with one path
         bool same_topo = sameTopoPathUTVD(paths[i], paths[exist_paths_id[j]]);
@@ -1440,7 +1535,7 @@ public:
     }
 
     // save pruned paths
-    for (int i = 0; i < exist_paths_id.size(); ++i)
+    for (size_t i = 0; i < exist_paths_id.size(); ++i)
     {
       pruned_paths.push_back(paths[exist_paths_id[i]]);
     }
@@ -1485,14 +1580,14 @@ public:
       double total_len = 0.0;
       vector<double> cum;
       cum.push_back(0.0);
-      for (int i = 1; i < path.size(); ++i)
+      for (size_t i = 1; i < path.size(); ++i)
       {
         total_len += (path[i] - path[i - 1]).norm();
         cum.push_back(total_len);
       }
 
       double target = s * total_len;
-      for (int i = 0; i < cum.size() - 1; ++i)
+      for (size_t i = 0; i < cum.size() - 1; ++i)
       {
         if (target >= cum[i] && target <= cum[i + 1])
         {
@@ -1606,7 +1701,7 @@ public:
   {
     int short_id = -1;
     double min_len = 100000000;
-    for (int i = 0; i < paths.size(); ++i)
+    for (size_t i = 0; i < paths.size(); ++i)
     {
       double len = pathLength(paths[i]);
       if (len < min_len)

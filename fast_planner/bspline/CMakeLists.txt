@@ -38,3 +38,7 @@ add_library( bspline
 target_link_libraries( bspline
     ${catkin_LIBRARIES} 
     )  
+
+# Demo executable
+add_executable(bspline_demo test/bspline_demo.cpp)
+target_link_libraries(bspline_demo bspline ${catkin_LIBRARIES})

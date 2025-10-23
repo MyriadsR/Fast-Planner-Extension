@@ -1,0 +1,171 @@
+===============================================
+动态立方体障碍物系统 - 快速使用指南
+===============================================
+
+✅ 编译状态：成功
+📦 包位置：/home/zr/Fast_Planner_ws/src/Fast-Planner-Extension/uav_simulator/dynamic_obstacles
+🎯 已集成到：topo_replan.launch
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 工作原理
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. 生成动态立方体（随机位置、尺寸、速度）
+2. 填充点云（分辨率可调）
+3. 点云发布到 ROS 话题
+4. (可选) SDFMap 订阅点云 → ESDF → 路径规划
+
+地图边界：40m x 20m x 5m（与 topo_replan.launch 一致）
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🚀 测试方法
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【方法1】独立运行（推荐先测试）
+
+终端1：
+  roscore
+
+终端2：
+  cd ~/Fast_Planner_ws
+  source devel/setup.bash
+  roslaunch dynamic_obstacles dynamic_cubes.launch
+
+终端3（可选 - RViz 可视化）：
+  rviz
+  # Fixed Frame: world
+  # Add -> PointCloud2: /dynamic_obstacles/cloud
+  # Add -> MarkerArray: /dynamic_obstacles/vis
+
+预期效果：
+  ✓ 橙色半透明立方体移动
+  ✓ 绿色箭头显示速度
+  ✓ 白色点云填充内部
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【方法2】集成到 topo_replan
+
+基本运行：
+  roslaunch plan_manage topo_replan.launch
+
+禁用动态障碍物：
+  roslaunch plan_manage topo_replan.launch enable_dynamic_obs:=false
+
+自定义参数：
+  roslaunch plan_manage topo_replan.launch \
+    dynamic_obs_num:=10 \
+    dynamic_obs_speed:=1.5
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚙️ 参数调整
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+在 launch 文件中修改：
+
+障碍物数量：
+  <arg name="dynamic_obs_num" default="5"/>  → 改为 10
+
+最大速度：
+  <arg name="dynamic_obs_speed" default="1.0"/> → 改为 0.5
+
+更新频率（在节点参数中）：
+  <param name="freq" value="10.0"/>  → 改为 5.0
+
+点云分辨率：
+  <param name="resolution" value="0.2"/>  → 改为 0.3
+
+立方体尺寸：
+  <param name="size_min_x" value="0.5"/>
+  <param name="size_max_x" value="1.5"/>
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔧 调试命令
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+检查节点状态：
+  rosnode list | grep dynamic
+  rosnode info /dynamic_cube_obstacles
+
+检查话题：
+  rostopic list | grep dynamic
+  rostopic hz /dynamic_obstacles/cloud     # 应该约 10 Hz
+  rostopic echo /dynamic_obstacles/cloud --noarr
+
+查看点云数量：
+  rostopic echo /dynamic_obstacles/cloud/width
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🐛 常见问题
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+【问题】节点启动失败
+【解决】
+  1. source devel/setup.bash
+  2. 检查：rospack find dynamic_obstacles
+  3. 重新编译：catkin_make
+
+【问题】RViz 看不到障碍物
+【解决】
+  1. Fixed Frame 设为 "world"
+  2. 检查话题名称是否正确
+  3. 增大 PointCloud2 的 Size (0.05-0.1)
+
+【问题】障碍物不移动
+【解决】
+  1. 检查频率：rostopic hz /dynamic_obstacles/cloud
+  2. 查看速度参数：obs_max_speed > 0
+  3. 检查节点日志
+
+【问题】CPU 占用过高
+【解决】
+  1. 降低频率：freq = 5.0
+  2. 降低密度：resolution = 0.3
+  3. 减少数量：obs_num = 3
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔗 与 ESDF 集成
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+当前状态：
+  - 点云发布到：/dynamic_obstacles/cloud
+  - SDFMap 订阅：/sdf_map/cloud
+
+集成选项：
+
+【选项1】话题重映射（简单但会覆盖静态地图）
+  修改 topo_replan.launch：
+  <remap from="/dynamic_obstacles/cloud" to="/map_generator/global_cloud"/>
+
+【选项2】修改 SDFMap 代码（推荐）
+  在 sdf_map.cpp 的 initMap() 中添加：
+  dynamic_cloud_sub_ = node_.subscribe<sensor_msgs::PointCloud2>(
+      "/dynamic_obstacles/cloud", 10, &SDFMap::cloudCallback, this);
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📚 文档位置
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+README.md        - 完整功能说明
+QUICKSTART.md    - 快速入门
+DEBUG_GUIDE.md   - 详细调试指南
+使用说明.txt     - 本文件
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✅ 验证清单
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+□ 编译成功
+□ 节点启动成功
+□ 话题正常发布（/dynamic_obstacles/cloud 和 /vis）
+□ RViz 中看到立方体
+□ 立方体在移动
+□ 边界反弹正常
+□ 可调整参数
+□ 可禁用功能
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+祝使用愉快！如有问题请查看 DEBUG_GUIDE.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

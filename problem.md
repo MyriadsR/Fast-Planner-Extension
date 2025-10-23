@@ -2,7 +2,7 @@
  * @Author: xzr && 1841953204@qq.com
  * @Date: 2025-10-13 20:25:55
  * @LastEditors: xzr && 1841953204@qq.com
- * @LastEditTime: 2025-10-16 16:42:40
+ * @LastEditTime: 2025-10-19 10:06:45
  * @FilePath: /Fast_Planner_ws/src/Fast-Planner-Extension/problem.md
  * @Description: problem record
  * 
@@ -15,6 +15,7 @@
 4. 如何加速边的安全时间窗口计算
 5. 边的正反检测是什么？
 6. 如果两条边之间没有安全时间区间交集，如何处理？`sameTopoPathUTVD`函数
+7. 路径有较大的回折怎么办？如视频所示
 
 # 局部UTVD与全局UTVD差别
 非常好，这个问题非常关键 👏 ——

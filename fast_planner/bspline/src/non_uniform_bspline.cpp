@@ -44,6 +44,9 @@ void NonUniformBspline::setUniformBspline(const Eigen::MatrixXd& points, const i
   n_ = points.rows() - 1;
   m_ = n_ + p_ + 1;
 
+  // 前 p_+1 个节点：通过 -p_, -p_+1, …, 0 乘以 interval_ 得到。
+  // 例如三次样条（p_=3）时是 [-3h, -2h, -h, 0]。
+  // 这种负向延伸在均匀B样条里常用于方便使曲线从 u=p 开始具有光滑性
   u_ = Eigen::VectorXd::Zero(m_ + 1);
   for (int i = 0; i <= m_; ++i) {
 
@@ -245,18 +248,21 @@ bool NonUniformBspline::reallocateTime(bool show) {
       double ratio = max_vel / limit_vel_ + 1e-4;
       if (ratio > limit_ratio_) ratio = limit_ratio_;
 
+      // 原始结时间跨度 time_ori
       double time_ori = u_(i + p_ + 1) - u_(i + 1);
+      // 新的时间跨度 time_new
       double time_new = ratio * time_ori;
       double delta_t  = time_new - time_ori;
       double t_inc    = delta_t / double(p_);
 
+      // 局部内部结（使区间内部均匀伸长）
       for (int j = i + 2; j <= i + p_ + 1; ++j) {
         u_(j) += double(j - i - 1) * t_inc;
         if (j <= 5 && j >= 1) {
           // cout << "vel j: " << j << endl;
         }
       }
-
+      // 局部之后的所有结（整体平移以保持相对位置）
       for (int j = i + p_ + 2; j < u_.rows(); ++j) {
         u_(j) += delta_t;
       }
@@ -291,6 +297,7 @@ bool NonUniformBspline::reallocateTime(bool show) {
       double delta_t  = time_new - time_ori;
       double t_inc    = delta_t / double(p_ - 1);
 
+      // 特例（靠近起点，i==1 或 i==2）：避免影响最前端重复结的端点性质
       if (i == 1 || i == 2) {
         // cout << "acc i: " << i << endl;
         for (int j = 2; j <= 5; ++j) {
@@ -359,11 +366,16 @@ void NonUniformBspline::parameterizeToBspline(const double& ts, const vector<Eig
 
   Eigen::MatrixXd A = Eigen::MatrixXd::Zero(K + 4, K + 2);
 
+  // 位置采样约束（前 K 行）：第 i 行将 [P_i, P_{i+1}, P_{i+2}] 用 (1/6)*[1,4,1] 加权，等于采样点 point_set[i]
   for (int i = 0; i < K; ++i) A.block(i, i, 1, 3) = (1 / 6.0) * prow.transpose();
 
+  // 起始速度约束（第 K 行）：用中心差分 (-P_0 + P_2) / (2*ts) 匹配 v0
+  // 结束速度约束（第 K+1 行）：(-P_{K-1} + P_{K+1}) / (2*ts) 匹配 vend
   A.block(K, 0, 1, 3)         = (1 / 2.0 / ts) * vrow.transpose();
   A.block(K + 1, K - 1, 1, 3) = (1 / 2.0 / ts) * vrow.transpose();
 
+  // 起始加速度约束（第 K+2 行）：(P_0 - 2*P_1 + P_2) / (ts^2) 匹配 a0
+  // 结束加速度约束（第 K+3 行）：(P_{K-1} - 2*P_K + P_{K+1}) / (ts^2) 匹配 aend
   A.block(K + 2, 0, 1, 3)     = (1 / ts / ts) * arow.transpose();
   A.block(K + 3, K - 1, 1, 3) = (1 / ts / ts) * arow.transpose();
   // cout << "A:\n" << A << endl;
@@ -374,6 +386,7 @@ void NonUniformBspline::parameterizeToBspline(const double& ts, const vector<Eig
   // A.row(K + 5) = (1 / ts / ts) * A.row(K + 5);
 
   // write b
+  // 右端向量 b（分别为 bx/by/bz）：前 K 项是采样点坐标，后 4 项是起止速度/加速度约束
   Eigen::VectorXd bx(K + 4), by(K + 4), bz(K + 4);
   for (int i = 0; i < K; ++i) {
     bx(i) = point_set[i](0);
