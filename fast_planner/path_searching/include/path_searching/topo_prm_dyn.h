@@ -115,6 +115,7 @@ private:
   Eigen::Vector3d start_pos_;
   Eigen::Vector3d goal_pos_;
   double robot_speed_;    // 机器人速度
+  double robot_radius_;   // 机器人半径
   double line_step_;    // 直线采样步长
   double max_prediction_time_;  // 最大预测时间
 
@@ -191,6 +192,22 @@ private:
   bool triangleVisib(Eigen::Vector3d pt, Eigen::Vector3d p1, Eigen::Vector3d p2);
   void pruneGraph();
 
+  // 新增的辅助函数（从test_prm_dynamic_simple.cpp）
+  bool isStaticObstacleColliding(
+      const std::shared_ptr<tprm::StaticSphereObstacle>& obstacle,
+      const Eigen::Vector3d& position) const;
+  bool isDynamicObstacleColliding(
+      const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
+      const Eigen::Vector3d& position,
+      double& hit_time_from,
+      double& hit_time_to) const;
+  bool isPathTimeSafe(const vector<Eigen::Vector3d>& path);
+  std::vector<std::pair<double, double>> computeObstacleCollisionWindows(
+      const Eigen::Vector3d& from,
+      const Eigen::Vector3d& to,
+      const std::shared_ptr<tprm::DynamicSphereObstacle>& obstacle,
+      double robot_speed);
+
   void depthFirstSearch(vector<GraphNode::Ptr>& vis);
 
   vector<Eigen::Vector3d> discretizeLine(Eigen::Vector3d p1, Eigen::Vector3d p2);
@@ -202,6 +219,8 @@ private:
   vector<Eigen::Vector3d> discretizePath(const vector<Eigen::Vector3d>& path, int pt_num);
   bool sameTopoPathUTVD(const GraphNode::Ptr guard1, const GraphNode::Ptr guard2,
                     const GraphNode::Ptr connector, const Eigen::Vector3d pt);
+  bool sameTopoPathUTVD(const vector<Eigen::Vector3d>& path1,
+                        const vector<Eigen::Vector3d>& path2);  // 两个路径的UTVD检查
   std::vector<std::pair<double,double>> intersectIntervals(
                     const std::vector<std::pair<double,double>>& A,
                     const std::vector<std::pair<double,double>>& B);
@@ -280,7 +299,9 @@ public:
 
   void init(ros::NodeHandle& nh);
 
-//   void setEnvironment(const EDTEnvironment::Ptr& env);
+  // Stub function for API compatibility with planner_manager.cpp
+  // EDT environment is not used in dynamic obstacle handling
+  void setEnvironment(const EDTEnvironment::Ptr& env);
 
   void findTopoPaths(Eigen::Vector3d start, Eigen::Vector3d end, vector<Eigen::Vector3d> start_pts,
                      vector<Eigen::Vector3d> end_pts, list<GraphNode::Ptr>& graph,

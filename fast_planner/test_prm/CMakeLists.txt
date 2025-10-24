@@ -6,6 +6,7 @@ set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
 set(CMAKE_BUILD_TYPE "Release")
 
 find_package(Eigen3 REQUIRED)
+find_package(OpenCV REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -14,17 +15,20 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   obj_state_msgs
   t_prm
+  plan_manage
+  traj_utils
 )
 
 catkin_package(
   INCLUDE_DIRS src
-  CATKIN_DEPENDS roscpp std_msgs visualization_msgs geometry_msgs obj_state_msgs t_prm
+  CATKIN_DEPENDS roscpp std_msgs visualization_msgs geometry_msgs obj_state_msgs t_prm plan_manage traj_utils
   DEPENDS Eigen3
 )
 
 include_directories(
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
+  ${OpenCV_INCLUDE_DIRS}
 )
 
 add_executable(test_prm_graph_node
@@ -33,6 +37,7 @@ add_executable(test_prm_graph_node
 
 target_link_libraries(test_prm_graph_node
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
 
 add_executable(dynamic_obstacle_publisher
@@ -41,6 +46,7 @@ add_executable(dynamic_obstacle_publisher
 
 target_link_libraries(dynamic_obstacle_publisher
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )
 
 add_executable(test_prm_dynamic_simple_node
@@ -49,4 +55,5 @@ add_executable(test_prm_dynamic_simple_node
 
 target_link_libraries(test_prm_dynamic_simple_node
   ${catkin_LIBRARIES}
+  ${OpenCV_LIBRARIES}
 )

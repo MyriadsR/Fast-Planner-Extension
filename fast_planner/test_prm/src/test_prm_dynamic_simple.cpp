@@ -6,7 +6,9 @@
 #include <ros/ros.h>
 #include <visualization_msgs/Marker.h>
 #include <visualization_msgs/MarkerArray.h>
+#include <nav_msgs/Path.h>
 #include <tprm/obstacle_impl.h>
+#include <poly_traj/polynomial_traj.h>
 
 #include <iostream>
 #include <vector>
@@ -49,6 +51,7 @@ private:
   ros::Publisher node_vis_pub_;
   ros::Publisher obs_vis_pub_;
   ros::Publisher robot_vis_pub_;
+  ros::Publisher minsnap_traj_pub_;  // MinSnap轨迹可视化发布器
 
   // PRM参数
   std::default_random_engine eng_;
@@ -82,6 +85,10 @@ private:
   std::vector<std::shared_ptr<tprm::StaticSphereObstacle>> sta_obstacles_;
   std::vector<std::shared_ptr<tprm::DynamicSphereObstacle>> dyn_obstacles_;
 
+  // MinSnap轨迹
+  PolynomialTraj minsnap_traj_;
+  bool has_minsnap_traj_;
+
   // 存储节点的安全时间区间
   std::map<int, std::vector<std::pair<double, double>>> safety_data_;
   std::vector<std::pair<double, double>> safe_edge_windows_1_;
@@ -90,12 +97,13 @@ private:
   std::vector<std::pair<double, double>> safe_edge_windows_4_;
 
 public:
-  DynamicSceneTester(ros::NodeHandle& nh) : nh_(nh) {
+  DynamicSceneTester(ros::NodeHandle& nh) : nh_(nh), has_minsnap_traj_(false) {
     // 初始化发布器
     graph_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/prm_graph", 10);
     node_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/prm_nodes", 10);
     obs_vis_pub_ = nh_.advertise<visualization_msgs::MarkerArray>("/dynamic_obstacles_viz", 10);
     robot_vis_pub_ = nh_.advertise<visualization_msgs::Marker>("/robot_sphere", 10);
+    minsnap_traj_pub_ = nh_.advertise<visualization_msgs::Marker>("/minsnap_trajectory", 10);
 
     // 初始化随机数生成器
     eng_ = std::default_random_engine(rd_());
@@ -1178,7 +1186,6 @@ public:
     // 输出统计信息
     ROS_INFO("\n=== Graph Creation Statistics ===");
     ROS_INFO("  Total samples: %d", sample_num);
-    ROS_INFO("  Sample time: %.3f s", sample_time);
     ROS_INFO("  Rejected by time window: %d", rejected_by_time_window);
     ROS_INFO("  Rejected by topology check (UTVD): %d", rejected_by_topology);
     ROS_INFO("  Accepted connections: %d", accepted_connections);
@@ -1259,7 +1266,7 @@ public:
       node_markers.markers.push_back(marker);
     }
 
-    // // 可视化边
+    // // 可视化所有边
     // for (const auto& node : graph_) {
     //   for (const auto& neighbor : node->neighbors_) {
     //     // 避免重复绘制边
@@ -1713,6 +1720,145 @@ public:
     return short_id;
   }
 
+  /**
+   * @brief 以输入的路径点生成 MinSnap 轨迹
+   */
+  void generateMinSnapTraj(const std::vector<Eigen::Vector3d> &paths) {
+    ROS_INFO("\n=== Generating MinSnap Trajectory ===");
+
+    // 调试信息
+    ROS_INFO("DEBUG: Input path has %lu waypoints", paths.size());
+
+    // 检查输入有效性
+    if (paths.size() < 2) {
+      ROS_ERROR("Path has less than 2 waypoints! Cannot generate trajectory.");
+      has_minsnap_traj_ = false;
+      return;
+    }
+
+    if (robot_speed_ <= 0.0) {
+      ROS_ERROR("robot_speed_ is invalid: %.2f", robot_speed_);
+      has_minsnap_traj_ = false;
+      return;
+    }
+
+    // 准备路径点数据
+    // 注意：minSnapTraj函数要求至少3个路径点
+    int pt_num = paths.size();
+
+    // 如果路径点少于3个，插入中间点
+    std::vector<Eigen::Vector3d> processed_paths = paths;
+    if (pt_num < 3) {
+      ROS_WARN("Path has only %d waypoints, adding intermediate waypoint", pt_num);
+      Eigen::Vector3d mid = (paths[0] + paths[1]) * 0.5;
+      processed_paths.insert(processed_paths.begin() + 1, mid);
+      pt_num = processed_paths.size();
+      ROS_INFO("DEBUG: After adding intermediate waypoint: %d waypoints", pt_num);
+    }
+
+    ROS_INFO("DEBUG: Creating position matrix...");
+    Eigen::MatrixXd pos(pt_num, 3);
+    for (int i = 0; i < pt_num; ++i) {
+      pos.row(i) = processed_paths[i];
+      ROS_INFO("  Waypoint %d: [%.2f, %.2f, %.2f]", i, pos(i,0), pos(i,1), pos(i,2));
+    }
+
+    // 计算时间分配（基于距离和最大速度）
+    ROS_INFO("DEBUG: Computing time allocation...");
+    Eigen::VectorXd time(pt_num - 1);
+    Eigen::VectorXd dist(pt_num - 1);
+    for (size_t i = 0; i < pt_num - 1; i++)
+    {
+      dist(i) = (pos.row(i + 1) - pos.row(i)).norm();
+      time(i) = dist(i) / robot_speed_;
+      ROS_INFO("  Segment %lu: dist=%.2f m, time=%.2f s", i, dist(i), time(i));
+    }
+
+    // 如果时间太短，设置最小时间
+    for (int i = 0; i < time.size(); ++i) {
+      if (time(i) < 0.5) {
+        ROS_INFO("  Adjusting segment %d time from %.2f to 0.5 s", i, time(i));
+        time(i) = 0.5;
+      }
+    }
+
+    // 边界条件：起点和终点速度、加速度均为0
+    Eigen::Vector3d zero_vel(0, 0, 0);
+    Eigen::Vector3d zero_acc(0, 0, 0);
+
+    // 生成MinSnap轨迹
+    ROS_INFO("DEBUG: Calling minSnapTraj...");
+    try {
+      minsnap_traj_ = minSnapTraj(pos, zero_vel, zero_vel, zero_acc, zero_acc, time);
+      minsnap_traj_.init();
+      has_minsnap_traj_ = true;
+      double total_time = minsnap_traj_.getTimeSum();
+      ROS_INFO("DEBUG: Time sum = %.2f s", total_time);
+
+      // 注意：getLength()需要先调用getTraj()来填充traj_vec3d向量
+      minsnap_traj_.getTraj();  // 填充轨迹点向量
+
+      double total_distance = minsnap_traj_.getLength();
+      ROS_INFO("DEBUG: Length = %.2f m", total_distance);
+
+      ROS_INFO("MinSnap trajectory generated:");
+      ROS_INFO("  Waypoints: %d", pt_num);
+      ROS_INFO("  Distance: %.2f m", total_distance);
+      ROS_INFO("  Total time: %.2f s", total_time);
+      ROS_INFO("=== MinSnap Trajectory Complete ===\n");
+    } catch (const std::exception& e) {
+      ROS_ERROR("Exception in minSnapTraj: %s", e.what());
+      has_minsnap_traj_ = false;
+    }
+  }
+
+  /**
+   * @brief 可视化MinSnap轨迹
+   */
+  void visualizeMinSnapTraj() {
+    if (!has_minsnap_traj_) {
+      return;
+    }
+
+    visualization_msgs::Marker traj_marker;
+    traj_marker.header.frame_id = "map";
+    traj_marker.header.stamp = ros::Time::now();
+    traj_marker.ns = "minsnap_trajectory";
+    traj_marker.id = 0;
+    traj_marker.type = visualization_msgs::Marker::LINE_STRIP;
+    traj_marker.action = visualization_msgs::Marker::ADD;
+
+    // 设置线条属性
+    traj_marker.scale.x = 0.3;  // 线宽
+    traj_marker.color.r = 0.0;
+    traj_marker.color.g = 1.0;  // 绿色
+    traj_marker.color.b = 0.0;
+    traj_marker.color.a = 1.0;
+
+    // 采样轨迹点
+    double total_time = minsnap_traj_.getTimeSum();
+    double dt = 0.05;  // 采样间隔50ms
+
+    for (double t = 0.0; t <= total_time; t += dt) {
+      Eigen::Vector3d pt = minsnap_traj_.evaluate(t);
+      geometry_msgs::Point p;
+      p.x = pt(0);
+      p.y = pt(1);
+      p.z = pt(2);
+      traj_marker.points.push_back(p);
+    }
+
+    // 添加终点
+    Eigen::Vector3d end_pt = minsnap_traj_.evaluate(total_time);
+    geometry_msgs::Point p_end;
+    p_end.x = end_pt(0);
+    p_end.y = end_pt(1);
+    p_end.z = end_pt(2);
+    traj_marker.points.push_back(p_end);
+
+    minsnap_traj_pub_.publish(traj_marker);
+  }
+
   void run() {
     ros::Rate rate(10.0);  // 10 Hz - 更流畅的动画效果
 
@@ -1756,25 +1902,24 @@ public:
     _create_dur = ros::WallTime::now() - _create_start;
     ROS_WARN("selectShortPaths elapsed: %.6f s (%.3f ms)", _create_dur.toSec(), _create_dur.toSec() * 1000.0);
 
-    visualizeGraph();
+    // 以最终的路径点为参考点生成 MinSnap 轨迹
+    ROS_INFO("\nGenerating MinSnap trajectory...");
+    ros::WallTime _minsnap_start = ros::WallTime::now();
+    generateMinSnapTraj(final_paths_[0]);  // 使用第一条路径点生成MinSnap轨迹,最短路径
+    ros::WallDuration _minsnap_dur = ros::WallTime::now() - _minsnap_start;
+    ROS_WARN("generateMinSnapTraj elapsed: %.6f s (%.3f ms)", _minsnap_dur.toSec(), _minsnap_dur.toSec() * 1000.0);
 
-    ROS_INFO("\n=== Test Complete ===");
-    ROS_INFO("Check RViz to see:");
-    ROS_INFO("  - Dynamic obstacle trajectories (orange lines)");
-    ROS_INFO("  - Dynamic obstacles (red spheres)");
-    ROS_INFO("  - Static obstacles (gray spheres)");
-    ROS_INFO("  - PRM graph nodes (blue=guards, green=connectors)");
-    ROS_INFO("  - PRM graph edges (yellow lines)");
-    ROS_INFO("  - Robot sphere (cyan) moving along the first path");
-    ROS_INFO("\nThe graph should avoid both static and dynamic obstacles,");
-    ROS_INFO("and demonstrate time-homotopic topology classes.");
-    ROS_INFO("The robot will follow the first selected path with time synchronized to obstacles.\n");
+    // 可视化MinSnap轨迹
+    visualizeMinSnapTraj();
+
+    visualizeGraph();
 
     // 保持运行以持续发布可视化
     while (ros::ok()) {
       visualizeDynamicObstacles();
       visualizeGraph();
-      visualizeRobotMotion();  // 可视化机器人沿路径运动
+      visualizeMinSnapTraj();         // 可视化MinSnap轨迹
+      visualizeRobotMotion();          // 可视化机器人沿路径运动
       ros::spinOnce();
       rate.sleep();
     }
@@ -1786,15 +1931,6 @@ int main(int argc, char** argv) {
   ros::NodeHandle nh("~");
 
   DynamicSceneTester tester(nh);
-
-  ROS_INFO("=================================================");
-  ROS_INFO("  PRM Dynamic Scene Tester");
-  ROS_INFO("=================================================");
-  ROS_INFO("This test creates a simple dynamic scene with:");
-  ROS_INFO("  - Moving obstacles that create time-varying topology");
-  ROS_INFO("  - Static obstacles");
-  ROS_INFO("  - PRM graph creation with UTVD homotopy checking");
-  ROS_INFO("=================================================\n");
 
   tester.run();
 

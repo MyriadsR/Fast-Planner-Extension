@@ -1,0 +1,22 @@
+<launch>
+  <!-- 启动 ROS master 若未运行（roslaunch 会自动启动） -->
+
+  <!-- 设置 Fast-Planner manager 参数（简化 setParam） -->
+  <node pkg="test_prm" type="test_prm_dynamic_simple_node" name="global_traj_demo" output="screen">
+    <param name="manager/max_vel" value="1.0" />
+    <param name="manager/max_acc" value="4.0" />
+    <param name="manager/max_jerk" value="10.0" />
+    <param name="manager/dynamic_environment" value="0" />
+    <param name="manager/clearance_threshold" value="0.3" />
+    <param name="manager/local_segment_length" value="8.0" />
+    <param name="manager/control_points_distance" value="0.5" />
+    <param name="manager/use_geometric_path" value="false" />
+    <param name="manager/use_kinodynamic_path" value="false" />
+    <param name="manager/use_topo_path" value="false" />
+    <param name="manager/use_optimization" value="false" />
+  </node>
+
+  <!-- 启动 RViz 以显示全局参考轨迹（黑色球列 /planning_vis/trajectory） -->
+  <node pkg="rviz" type="rviz" name="rviz" output="screen"
+        args="-d $(find test_prm)/rviz/global_traj_demo.rviz" />
+</launch>

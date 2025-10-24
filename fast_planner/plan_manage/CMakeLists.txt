@@ -59,8 +59,16 @@ add_executable(fast_planner_node
   src/topo_replan_fsm.cpp
   src/planner_manager.cpp
   )
+
+add_library(plan_manage
+  src/kino_replan_fsm.cpp
+  src/topo_replan_fsm.cpp
+  src/planner_manager.cpp
+  )
+
 target_link_libraries(fast_planner_node 
   ${catkin_LIBRARIES}
+  plan_manage
   )
 
 add_executable(traj_server src/traj_server.cpp)
