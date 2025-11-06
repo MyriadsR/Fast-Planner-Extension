@@ -9,6 +9,8 @@
 #include <nav_msgs/Path.h>
 #include <tprm/obstacle_impl.h>
 #include <poly_traj/polynomial_traj.h>
+#include <bspline/non_uniform_bspline.h>
+#include <bspline_opt/bspline_optimizer.h>
 
 #include <iostream>
 #include <vector>
@@ -75,6 +77,7 @@ private:
   int max_raw_path_, max_raw_path2_;
   int reserve_num_;
   double ratio_to_short_;
+  double control_point_dist_;
 
   ros::Time start_time_;  // 记录开始时间，用于动态障碍物动画
 
@@ -88,6 +91,9 @@ private:
   // MinSnap轨迹
   PolynomialTraj minsnap_traj_;
   bool has_minsnap_traj_;
+
+  // B-spline优化器（每条轨迹对应一个优化器）
+  std::vector<std::shared_ptr<fast_planner::BsplineOptimizer>> bspline_optimizers_;
 
   // 存储节点的安全时间区间
   std::map<int, std::vector<std::pair<double, double>>> safety_data_;
@@ -119,6 +125,7 @@ public:
     nh_.param("max_raw_path2", max_raw_path2_, -1);
     nh_.param("reserve_num", reserve_num_, 0);
     nh_.param("ratio_to_short", ratio_to_short_, 0.0);
+    nh_.param("control_point_dist", control_point_dist_, 0.0);
     
 
     std::vector<double> inflate;
@@ -1813,6 +1820,75 @@ public:
   }
 
   /**
+   * @description: 将多项式轨迹转换为B样条轨迹
+   * @param {PolynomialTraj} &poly
+   * @param {double} duration
+   * @param {double} dt
+   * @param {double} &out_dt
+   * @param {MatrixXd} &out_ctrl
+   */
+  fast_planner::NonUniformBspline toBsplineFromPoly(PolynomialTraj &poly, double duration,
+                                                    double dt, double &out_dt, Eigen::MatrixXd &out_ctrl)
+  {
+    // 1) 采样点集
+    std::vector<Eigen::Vector3d> point_set;
+    for (double t = 0.0; t <= duration + 1e-6; t += dt)
+    {
+      point_set.push_back(poly.evaluate(t));
+    }
+    // 2) 起止导数边界（v0, vT, a0, aT）
+    std::vector<Eigen::Vector3d> sed(4);
+    sed[0] = poly.evaluateVel(0.0);
+    sed[1] = poly.evaluateVel(duration);
+    sed[2] = poly.evaluateAcc(0.0);
+    sed[3] = poly.evaluateAcc(duration);
+
+    // 3) 由点集+导数参数化为三次均匀B样条控制点
+    fast_planner::NonUniformBspline::parameterizeToBspline(dt, point_set, sed, out_ctrl);
+    out_dt = dt;
+
+    // 4) 构造样条
+    return fast_planner::NonUniformBspline(out_ctrl, 3, out_dt);
+  }
+
+  // 优化B样条轨迹以更好地跟踪引导路径（后期可加入第二阶段优化）
+  void optimizeTopoBspline(double start_t, double duration,
+                           vector<Eigen::Vector3d> guide_path, int traj_id)
+  {
+    // 第一阶段：跟踪引导路径
+    double bspline_dt, bspline_out_t;
+    Eigen::MatrixXd bspline_ctrl;
+    // 将 MinSnap 轨迹转换为 B 样条轨迹
+    if (has_minsnap_traj_) {
+      double length = minsnap_traj_.getLength();
+      int seg_num = floor(length / control_point_dist_);  // 计算需要多少个控制点
+      double total_time = minsnap_traj_.getTimeSum();
+      bspline_dt = total_time / seg_num;  // B样条采样时间间距
+      fast_planner::NonUniformBspline bspline = toBsplineFromPoly(minsnap_traj_, minsnap_traj_.getTimeSum(),
+                                                                  bspline_dt, bspline_out_t, bspline_ctrl);
+      ROS_INFO("Converted MinSnap trajectory to B-spline:");
+      ROS_INFO("  Control points: %ld", bspline_ctrl.rows());
+      ROS_INFO("  dt: %.2f s", bspline_dt);
+    }
+
+    // 离散化拓扑路径为引导点
+    vector<Eigen::Vector3d> guide_pt;
+    guide_pt = discretizePath(guide_path, int(bspline_ctrl.rows()) - 2);
+
+    // 移除首尾各2个点（因为B样条的边界条件）
+    guide_pt.pop_back();
+    guide_pt.pop_back();
+    guide_pt.erase(guide_pt.begin(), guide_pt.begin() + 2);
+
+    if (guide_pt.size() != int(bspline_ctrl.rows()) - 6) ROS_WARN("what guide");
+
+    bspline_optimizers_[traj_id]->setGuidePath(guide_pt);
+    Eigen::MatrixXd opt_ctrl_pts1 = bspline_optimizers_[traj_id]->BsplineOptimizeTraj(
+    bspline_ctrl, bspline_dt, fast_planner::BsplineOptimizer::GUIDE_PHASE, 0, 1);
+
+  }
+
+  /**
    * @brief 可视化MinSnap轨迹
    */
   void visualizeMinSnapTraj() {
@@ -1908,6 +1984,9 @@ public:
     generateMinSnapTraj(final_paths_[0]);  // 使用第一条路径点生成MinSnap轨迹,最短路径
     ros::WallDuration _minsnap_dur = ros::WallTime::now() - _minsnap_start;
     ROS_WARN("generateMinSnapTraj elapsed: %.6f s (%.3f ms)", _minsnap_dur.toSec(), _minsnap_dur.toSec() * 1000.0);
+
+    // 优化B样条
+    optimizeTopoBspline(0.0, minsnap_traj_.getTimeSum(), final_paths_[0], 0);
 
     // 可视化MinSnap轨迹
     visualizeMinSnapTraj();

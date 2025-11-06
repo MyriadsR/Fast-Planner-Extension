@@ -7,6 +7,7 @@ set(CMAKE_BUILD_TYPE "Release")
 
 find_package(Eigen3 REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(PCL REQUIRED)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -17,18 +18,21 @@ find_package(catkin REQUIRED COMPONENTS
   t_prm
   plan_manage
   traj_utils
+  bspline_opt
 )
 
 catkin_package(
   INCLUDE_DIRS src
-  CATKIN_DEPENDS roscpp std_msgs visualization_msgs geometry_msgs obj_state_msgs t_prm plan_manage traj_utils
+  CATKIN_DEPENDS roscpp std_msgs visualization_msgs geometry_msgs obj_state_msgs t_prm plan_manage traj_utils bspline_opt
   DEPENDS Eigen3
+  DEPENDS PCL
 )
 
 include_directories(
   ${catkin_INCLUDE_DIRS}
   ${EIGEN3_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ${PCL_INCLUDE_DIRS}
 )
 
 add_executable(test_prm_graph_node
@@ -56,4 +60,5 @@ add_executable(test_prm_dynamic_simple_node
 target_link_libraries(test_prm_dynamic_simple_node
   ${catkin_LIBRARIES}
   ${OpenCV_LIBRARIES}
+  ${PCL_LIBRARIES}
 )

@@ -17,6 +17,7 @@
     <param name="max_raw_path2" value="50" />
     <param name="reserve_num" value="6" />
     <param name="ratio_to_short" value="2" />
+    <param name="control_point_dist" value="0.2" />
 
     <!-- 采样区域参数 -->
     <rosparam param="sample_inflate_x">[1.0, 2.0, 2.0]</rosparam>

@@ -475,7 +475,8 @@ void FastPlannerManager::optimizeTopoBspline(double start_t, double duration,
   // discretize the guide path and align it with B-spline control points
   vector<Eigen::Vector3d> guide_pt;
   guide_pt = topo_prm_->pathToGuidePts(guide_path, int(ctrl_pts.rows()) - 2);
-
+  
+  // 移除首尾各2个点（因为B样条的边界条件）
   guide_pt.pop_back();
   guide_pt.pop_back();
   guide_pt.erase(guide_pt.begin(), guide_pt.begin() + 2);
