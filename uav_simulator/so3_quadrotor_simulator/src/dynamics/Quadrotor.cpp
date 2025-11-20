@@ -34,8 +34,8 @@ Quadrotor::Quadrotor(void)
   // state_.x << 40.0, -60.0, 10.0;
   state_.v         = Eigen::Vector3d::Zero();
   state_.R         = Eigen::Matrix3d::Identity();
-  state_.omega     = Eigen::Vector3d::Zero();
-  state_.motor_rpm = Eigen::Array4d::Zero();
+  state_.omega     = Eigen::Vector3d::Zero();   // 角速度
+  state_.motor_rpm = Eigen::Array4d::Zero();    // 四个电机转速
 
   external_force_.setZero();
 
@@ -44,11 +44,13 @@ Quadrotor::Quadrotor(void)
   input_ = Eigen::Array4d::Zero();
 }
 
+// 数值积分（step 函数）
 void
 Quadrotor::step(double dt)
 {
   auto save = internal_state_;
 
+  // 使用 Boost ODE 积分器求解微分方程
   odeint::integrate(boost::ref(*this), internal_state_, 0.0, dt, dt);
 
   for (int i = 0; i < 22; ++i)
@@ -81,10 +83,11 @@ Quadrotor::step(double dt)
   state_.motor_rpm(3) = internal_state_[21];
 
   // Re-orthonormalize R (polar decomposition)
+  // 旋转矩阵重正交化（数值误差校正）
   Eigen::LLT<Eigen::Matrix3d> llt(state_.R.transpose() * state_.R);
   Eigen::Matrix3d             P = llt.matrixL();
   Eigen::Matrix3d             R = state_.R * P.inverse();
-  state_.R                      = R;
+  state_.R                      = R;    // 极分解
 
   // Don't go below zero, simulate floor
   if (state_.x(2) < 0.0 && state_.v(2) < 0)
@@ -128,7 +131,8 @@ Quadrotor::operator()(const Quadrotor::InternalState& x,
   Eigen::Vector3d vnorm;
   Eigen::Array4d  motor_rpm_sq;
   Eigen::Matrix3d omega_vee(Eigen::Matrix3d::Zero());
-
+  
+  // 构造反对称矩阵（叉乘矩阵）
   omega_vee(2, 1) = cur_state.omega(0);
   omega_vee(1, 2) = -cur_state.omega(0);
   omega_vee(0, 2) = cur_state.omega(1);
@@ -151,14 +155,17 @@ Quadrotor::operator()(const Quadrotor::InternalState& x,
   //! @todo end
 
   // double totalF = kf_ * motor_rpm_sq.sum();
+  // 四个电机总的推力
   double thrust = kf_ * motor_rpm_sq.sum();
 
+  // 三个力矩计算
   Eigen::Vector3d moments;
   moments(0) = kf_ * (motor_rpm_sq(2) - motor_rpm_sq(3)) * arm_length_;
   moments(1) = kf_ * (motor_rpm_sq(1) - motor_rpm_sq(0)) * arm_length_;
   moments(2) = km_ * (motor_rpm_sq(0) + motor_rpm_sq(1) - motor_rpm_sq(2) -
                       motor_rpm_sq(3));
 
+  // 简单空气阻力模型
   double resistance = 0.1 *                                        // C
                       3.14159265 * (arm_length_) * (arm_length_) * // S
                       cur_state.v.norm() * cur_state.v.norm();
@@ -166,22 +173,27 @@ Quadrotor::operator()(const Quadrotor::InternalState& x,
   //  ROS_INFO("resistance: %lf, Thrust: %lf%% ", resistance,
   //           motor_rpm_sq.sum() / (4 * max_rpm_ * max_rpm_) * 100.0);
 
+  // 无人机动力学模型
   vnorm = cur_state.v;
   if (vnorm.norm() != 0)
   {
     vnorm.normalize();
   }
   x_dot = cur_state.v;
+  // thrust * R.col(2) 推力向量在世界系的表示
   v_dot = -Eigen::Vector3d(0, 0, g_) + thrust * R.col(2) / mass_ +
           external_force_ / mass_ /*; //*/ - resistance * vnorm / mass_;
 
   acc_ = v_dot;
   //  acc_[2] = -acc_[2]; // to NED
 
+  // 旋转矩阵的导数
   R_dot = R * omega_vee;
   omega_dot =
     J_.inverse() *
     (moments - cur_state.omega.cross(J_ * cur_state.omega) + external_moment_);
+
+  // 电机动力学模型，一阶系统
   motor_rpm_dot = (input_ - cur_state.motor_rpm) / motor_time_constant_;
 
   for (int i = 0; i < 3; i++)
@@ -210,6 +222,7 @@ Quadrotor::operator()(const Quadrotor::InternalState& x,
 void
 Quadrotor::setInput(double u1, double u2, double u3, double u4)
 {
+  // 设置四个电机的输入转速，并进行边界检查
   input_(0) = u1;
   input_(1) = u2;
   input_(2) = u3;

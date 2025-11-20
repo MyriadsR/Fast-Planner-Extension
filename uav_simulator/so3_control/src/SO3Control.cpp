@@ -48,6 +48,11 @@ SO3Control::calculateControl(const Eigen::Vector3d& des_pos,
   Eigen::Vector3d totalError =
     (des_pos - pos_) + (des_vel - vel_) + (des_acc - acc_);
 
+  /*
+  如果某个轴的总误差超过 3，则该轴的自适应增益为 0
+  否则增益为误差的 20%
+  这是一种误差容忍机制，防止大误差时控制过于激进
+  */
   Eigen::Vector3d ka(fabs(totalError[0]) > 3 ? 0 : (fabs(totalError[0]) * 0.2),
                      fabs(totalError[1]) > 3 ? 0 : (fabs(totalError[1]) * 0.2),
                      fabs(totalError[2]) > 3 ? 0 : (fabs(totalError[2]) * 0.2));
@@ -66,6 +71,9 @@ SO3Control::calculateControl(const Eigen::Vector3d& des_pos,
                 kv.asDiagonal() * (des_vel - vel_) + //
                 mass_ * des_acc +                    //
                 mass_ * ka.asDiagonal() * (des_acc - acc_);
+
+  // 修正推力方向，确保与垂直方向夹角不超过45度
+  // 注意这里的 force_ 是在世界坐标系下的表示
   if (Eigen::Vector3d(0, 0, 1).dot(force_ / force_.norm()) < c)
   {
     double nf        = f.norm();

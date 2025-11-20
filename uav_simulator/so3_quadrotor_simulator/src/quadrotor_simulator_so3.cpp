@@ -8,16 +8,16 @@
 
 typedef struct _Control
 {
-  double rpm[4];
+  double rpm[4];  // 四个螺旋桨的转速
 } Control;
 
 typedef struct _Command
 {
-  float force[3];
-  float qx, qy, qz, qw;
-  float kR[3];
-  float kOm[3];
-  float corrections[3];
+  float force[3];  // 期望推力向量（世界系）
+  float qx, qy, qz, qw;   // 期望姿态（四元数）
+  float kR[3];      // 姿态增益
+  float kOm[3];     // 角速度增益
+  float corrections[3]; // 推力系数修正项
   float current_yaw;
   bool  use_external_yaw;
 } Command;
@@ -41,8 +41,8 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
 {
   const double _kf = quad.getPropellerThrustCoefficient();
   const double _km = quad.getPropellerMomentCoefficient();
-  const double kf  = _kf - cmd.corrections[0];
-  const double km  = _km / _kf * kf;
+  const double kf  = _kf - cmd.corrections[0];    // 修正后的推力系数
+  const double km  = _km / _kf * kf;          // 修正后的力矩系数
 
   const double          d       = quad.getArmLength();
   const Eigen::Matrix3f J       = quad.getInertia().cast<float>();
@@ -52,10 +52,15 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
   const QuadrotorSimulator::Quadrotor::State state = quad.getState();
 
   // Rotation, may use external yaw
+  // 提取当前的 Yaw-Pitch-Roll
   Eigen::Vector3d _ypr = uav_utils::R_to_ypr(state.R);
   Eigen::Vector3d ypr  = _ypr;
+
+  // 如果使用外部偏航，则替换
   if (cmd.use_external_yaw)
     ypr[0] = cmd.current_yaw;
+
+  // 重构旋转矩阵 R（当前实际姿态）
   Eigen::Matrix3d R;
   R = Eigen::AngleAxisd(ypr[0], Eigen::Vector3d::UnitZ()) *
       Eigen::AngleAxisd(ypr[1], Eigen::Vector3d::UnitY()) *
@@ -84,6 +89,7 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
   float Om2 = state.omega(1);
   float Om3 = state.omega(2);
 
+  // 将期望四元数转换为旋转矩阵 Rd
   float Rd11 =
     cmd.qw * cmd.qw + cmd.qx * cmd.qx - cmd.qy * cmd.qy - cmd.qz * cmd.qz;
   float Rd12 = 2 * (cmd.qx * cmd.qy - cmd.qw * cmd.qz);
@@ -97,14 +103,17 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
   float Rd33 =
     cmd.qw * cmd.qw - cmd.qx * cmd.qx - cmd.qy * cmd.qy + cmd.qz * cmd.qz;
 
+  // Psi 是姿态跟踪误差的度量（0 = 完美对齐）
   float Psi = 0.5f * (3.0f - (Rd11 * R11 + Rd21 * R21 + Rd31 * R31 +
                               Rd12 * R12 + Rd22 * R22 + Rd32 * R32 +
                               Rd13 * R13 + Rd23 * R23 + Rd33 * R33));
 
   float force = 0;
   if (Psi < 1.0f) // Position control stability guaranteed only when Psi < 1
+    // force 是推力在机体 z 轴上的投影（标量）
     force = cmd.force[0] * R13 + cmd.force[1] * R23 + cmd.force[2] * R33;
 
+  // 姿态误差向量（SO(3) 上的误差）
   float eR1 = 0.5f * (R12 * Rd13 - R13 * Rd12 + R22 * Rd23 - R23 * Rd22 +
                       R32 * Rd33 - R33 * Rd32);
   float eR2 = 0.5f * (R13 * Rd11 - R11 * Rd13 - R21 * Rd23 + R23 * Rd21 -
@@ -112,10 +121,12 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
   float eR3 = 0.5f * (R11 * Rd12 - R12 * Rd11 + R21 * Rd22 - R22 * Rd21 +
                       R31 * Rd32 - R32 * Rd31);
 
+  // 期望角速度为 0（悬停或慢速），简化版本
   float eOm1 = Om1;
   float eOm2 = Om2;
   float eOm3 = Om3;
-
+  
+  // 角动量项 I*Om 的叉乘，这是 ω×(Jω)，用于前馈补偿
   float in1 = Om2 * (I[2][0] * Om1 + I[2][1] * Om2 + I[2][2] * Om3) -
               Om3 * (I[1][0] * Om1 + I[1][1] * Om2 + I[1][2] * Om3);
   float in2 = Om3 * (I[0][0] * Om1 + I[0][1] * Om2 + I[0][2] * Om3) -
@@ -136,10 +147,12 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
     float muR3 = -deltaR*deltaR * eA3 / (deltaR * neA + epsilonR);
     // Robust Control --------------------------------------------
   */
+  // 控制力矩计算
   float M1 = -cmd.kR[0] * eR1 - cmd.kOm[0] * eOm1 + in1; // - I[0][0]*muR1;
   float M2 = -cmd.kR[1] * eR2 - cmd.kOm[1] * eOm2 + in2; // - I[1][1]*muR2;
   float M3 = -cmd.kR[2] * eR3 - cmd.kOm[2] * eOm3 + in3; // - I[2][2]*muR3;
-
+  
+  // 控制分配（电机转速求解）
   float w_sq[4];
   w_sq[0] = force / (4 * kf) - M2 / (2 * d * kf) + M3 / (4 * km);
   w_sq[1] = force / (4 * kf) + M2 / (2 * d * kf) + M3 / (4 * km);
@@ -152,6 +165,7 @@ getControl(const QuadrotorSimulator::Quadrotor& quad, const Command& cmd)
     if (w_sq[i] < 0)
       w_sq[i] = 0;
 
+    // 前面得到的是转速的平方，这里开方得到转速
     control.rpm[i] = sqrtf(w_sq[i]);
   }
   return control;
